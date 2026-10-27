@@ -1,0 +1,56 @@
+name: Rust checks
+on:
+  push:
+    branches: [main]
+    tags: ['**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS runners bill at 10x in private repos: run it only on manual
+        # dispatch and tag pushes; main pushes and PRs run Ubuntu only.
+        os: ${{ fromJSON((github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: sudo apt-get update && sudo apt-get install -y libssl-dev libdbus-1-dev pkg-config
+        if: runner.os == 'Linux'
+      - name: Leak scan of the public export (private repo only)
+        if: runner.os == 'Linux' && hashFiles('scripts/export-public.sh') != ''
+        run: scripts/export-public.sh "$RUNNER_TEMP/public-export"
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --locked --release
+      - name: Install tmux
+        run: |
+          if ! command -v tmux >/dev/null; then
+            if [ "$RUNNER_OS" = Linux ]; then sudo apt-get install -y tmux; else brew install tmux; fi
+          fi
+          tmux -V
+          python3 --version
+      - name: verify-m2k smoke test
+        env:
+          LANG: en_US.UTF-8
+          LC_ALL: ${{ runner.os == 'Linux' && 'C.UTF-8' || 'en_US.UTF-8' }}
+        run: |
+          # m2kv launch builds with --offline; prefetch so it works from a cold cache.
+          cargo fetch --locked
+          .agents/skills/verify-m2k/scripts/smoke
+      - name: Upload verify evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-evidence-${{ matrix.os }}
+          path: .tmp/verify/
+          if-no-files-found: ignore

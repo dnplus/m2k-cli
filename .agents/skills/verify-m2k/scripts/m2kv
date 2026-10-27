@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# Verification harness for m2k: isolated demo data dir, recorded CLI runs, tmux-driven TUI.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+BIN="$REPO/target/debug/m2k"
+DATA_ROOT="${TMPDIR:-/tmp}"
+DATA_ROOT="${DATA_ROOT%/}/m2k-verify"
+
+usage() {
+  cat <<'EOF'
+m2kv launch                         build, seed a demo data dir, print RUN_ID
+m2kv doctor  RUN_ID                 read-only health check of that run
+m2kv cli     RUN_ID [--] ARGS...    run `m2k --data-dir <run> ARGS`, record evidence
+m2kv tui     RUN_ID start|keys K..|capture NAME|stop
+m2kv cleanup RUN_ID                 stop what this run started, delete data, keep evidence
+EOF
+}
+
+data_dir() { echo "$DATA_ROOT/$1/data"; }
+evidence_dir() { echo "$REPO/.tmp/verify/$1"; }
+session() { echo "m2kv-$1"; }
+
+require_run() {
+  [[ -n "${1:-}" ]] || { usage >&2; exit 2; }
+  [[ -d "$(data_dir "$1")" ]] || { echo "no such run: $1 (data dir missing)" >&2; exit 2; }
+}
+
+next_seq() {
+  local dir="$1" n
+  n=$(find "$dir" -maxdepth 1 -name '[0-9][0-9][0-9]-*' | wc -l | tr -d ' ')
+  printf '%03d' "$n"
+}
+
+cmd_launch() {
+  (cd "$REPO" && cargo build --offline --locked --quiet)
+  local run="$(date +%Y%m%d-%H%M%S)-$$"
+  local data; data="$(data_dir "$run")"
+  mkdir -p "$data" "$(evidence_dir "$run")"
+  "$BIN" --data-dir "$data" demo --no-tui >"$(evidence_dir "$run")/000-launch.json"
+  echo "$run"
+}
+
+cmd_doctor() {
+  require_run "$1"
+  local data; data="$(data_dir "$1")"
+  local ok=1
+  local head; head="$(git -C "$REPO" rev-parse --short=12 HEAD)"
+  local version; version="$("$BIN" --version)"
+  echo "binary:   $version"
+  [[ "$version" == *"$head"* ]] || { echo "FAIL: binary build commit != HEAD $head (rerun launch)"; ok=0; }
+  [[ -f "$data/.demo" ]] && echo "data dir: $data (demo)" || { echo "FAIL: $data is not a demo data dir"; ok=0; }
+  local counts
+  counts="$("$BIN" --data-dir "$data" --json status | python3 -c 'import json,sys; c=json.load(sys.stdin)["counts"]; print(c["mail"],c["calendar"],c["contacts"])')"
+  echo "counts:   mail calendar contacts = $counts"
+  [[ "$counts" == "2 3 2" ]] || echo "WARN: seed counts differ from the fresh demo baseline (2 3 2)"
+  if tmux has-session -t "$(session "$1")" 2>/dev/null; then echo "tui:      running in tmux $(session "$1")"; fi
+  [[ $ok == 1 ]] && echo "doctor: OK" || { echo "doctor: FAIL"; exit 1; }
+}
+
+cmd_cli() {
+  require_run "$1"
+  local run="$1"; shift
+  [[ "${1:-}" == "--" ]] && shift
+  local ev; ev="$(evidence_dir "$run")"
+  local f="$ev/$(next_seq "$ev")-cli.txt"
+  local out err code
+  out="$(mktemp)"; err="$(mktemp)"
+  set +e
+  "$BIN" --data-dir "$(data_dir "$run")" "$@" >"$out" 2>"$err"
+  code=$?
+  set -e
+  {
+    printf '$ m2k --data-dir <run>'; printf ' %q' "$@"; printf '\n'
+    echo "exit: $code"
+    echo "--- stdout"; cat "$out"
+    echo "--- stderr"; cat "$err"
+  } >"$f"
+  cat "$out"; cat "$err" >&2
+  rm -f "$out" "$err"
+  echo "[evidence] $f (exit $code)" >&2
+  return "$code"
+}
+
+cmd_tui() {
+  require_run "$1"
+  local run="$1" action="${2:-}"; shift 2 || true
+  local s; s="$(session "$run")"
+  case "$action" in
+    start)
+      tmux new-session -d -s "$s" -x 120 -y 32 "$BIN --data-dir '$(data_dir "$run")' tui"
+      # Ready = the tab bar is painted.
+      for _ in $(seq 50); do
+        tmux capture-pane -p -t "$s" 2>/dev/null | grep -q '1 郵件' && { echo "tui ready: $s"; return; }
+        sleep 0.1
+      done
+      echo "tui did not paint within 5s" >&2; exit 1 ;;
+    keys) tmux send-keys -t "$s" "$@"; sleep 0.5 ;;
+    capture)
+      local f; f="$(evidence_dir "$run")/$(next_seq "$(evidence_dir "$run")")-tui-${1:-screen}.txt"
+      tmux capture-pane -p -t "$s" | tee "$f"
+      echo "[evidence] $f" >&2 ;;
+    stop)
+      tmux send-keys -t "$s" q
+      sleep 1
+      if tmux has-session -t "$s" 2>/dev/null; then
+        echo "tui did not exit on q; killing session $s" >&2
+        tmux kill-session -t "$s"; exit 1
+      fi
+      echo "tui exited cleanly" ;;
+    *) usage >&2; exit 2 ;;
+  esac
+}
+
+cmd_cleanup() {
+  [[ -n "${1:-}" ]] || { usage >&2; exit 2; }
+  tmux kill-session -t "$(session "$1")" 2>/dev/null || true
+  rm -rf "${DATA_ROOT:?}/$1"
+  echo "removed $DATA_ROOT/$1; evidence kept at $(evidence_dir "$1")"
+}
+
+case "${1:-}" in
+  launch) cmd_launch ;;
+  doctor) cmd_doctor "${2:-}" ;;
+  cli) shift; cmd_cli "$@" ;;
+  tui) shift; cmd_tui "$@" ;;
+  cleanup) cmd_cleanup "${2:-}" ;;
+  *) usage; exit 2 ;;
+esac

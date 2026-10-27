@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Non-interactive smoke test of the built m2k binary through m2kv. Any failed assertion exits non-zero.
+# Assertions avoid seed counts so a larger demo seed does not break them.
+set -euo pipefail
+
+M2KV="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/m2kv"
+RUN=""
+
+cleanup() { [[ -z "$RUN" ]] || "$M2KV" cleanup "$RUN" || true; }
+trap cleanup EXIT
+
+fail() { echo "SMOKE FAIL: $*" >&2; exit 1; }
+
+# Run `m2kv cli`, capture stdout in $OUT and exit code in $CODE without tripping set -e.
+cli() {
+  set +e
+  OUT="$("$M2KV" cli "$RUN" -- "$@" 2>/dev/null)"
+  CODE=$?
+  set -e
+}
+
+RUN="$("$M2KV" launch)"
+echo "run: $RUN"
+"$M2KV" doctor "$RUN"
+
+cli --json mail list
+[[ $CODE == 0 ]] || fail "mail list exited $CODE"
+grep -Eq '"id": ?"demo-mail-[0-9]+"' <<<"$OUT" || fail "mail list has no demo mail id"
+
+cli --json mail show missing-id
+[[ $CODE == 1 ]] || fail "mail show missing-id exited $CODE, want 1"
+grep -q '"not_found"' <<<"$OUT" || fail "mail show missing-id lacks not_found: $OUT"
+
+BODY="$(mktemp)"
+echo "smoke" >"$BODY"
+cli --json mail send --to nobody@example.test --subject smoke --body-file "$BODY"
+rm -f "$BODY"
+[[ $CODE != 0 ]] || fail "mail send succeeded against demo data"
+grep -q '"operation_failed"' <<<"$OUT" || fail "mail send lacks operation_failed: $OUT"
+
+"$M2KV" tui "$RUN" start
+"$M2KV" tui "$RUN" keys 2
+FRAME="$("$M2KV" tui "$RUN" capture calendar 2>/dev/null)"
+grep -q '行事曆' <<<"$FRAME" || fail "TUI frame after key 2 lacks 行事曆"
+"$M2KV" tui "$RUN" stop
+
+echo "SMOKE OK"

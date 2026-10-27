@@ -1,0 +1,19 @@
+{
+  "name": "demo",
+  "sites": [
+    { "name": "北區", "prefixes": ["北區"] },
+    { "name": "中區", "prefixes": ["中區"] },
+    { "name": "南區", "prefixes": ["南區"] }
+  ],
+  "room_capacity_from_name_suffix": true,
+  "rooms": [
+    { "name": "北區甲室_16", "access": "demo-room-a" },
+    { "name": "北區乙室_16", "access": "demo-room-b" },
+    { "name": "北區示範會議室甲_20", "access": "demo-room-c" },
+    { "name": "北區丙室_14", "access": "demo-room-d" },
+    { "name": "北區丁室_05", "access": "demo-room-e" },
+    { "name": "中區甲室_24", "access": "demo-room-f" },
+    { "name": "中區乙室_03", "access": "demo-room-g" },
+    { "name": "南區會議室_06", "access": "demo-room-h" }
+  ]
+}

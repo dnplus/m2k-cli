@@ -1,0 +1,10 @@
+BEGIN:VCARD
+VERSION:3.0
+UID:m2k-example-contact@example.test
+FN:王小明
+N:王;小明;;;
+ORG:範例工程部
+TITLE:工程師
+EMAIL:ming@example.test
+TEL:+886-2-0000-0000
+END:VCARD

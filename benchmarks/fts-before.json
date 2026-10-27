@@ -1,0 +1,195 @@
+{
+  "binary": "<local>/m2k-before",
+  "binary_sha256": "043c3fc2d5abddeacae5641b6c63ae1066b6e8ff59de580f5a5d601f823642ed",
+  "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "fixture": "<local>/fx-before",
+  "mail_count": 4000,
+  "mail_base64_chars_each": 65536,
+  "inbox_count": 100,
+  "warmup_runs": 1,
+  "sample_runs": 5,
+  "results": {
+    "list_limit_10": {
+      "median_wall_ms": 9.574583997164154,
+      "median_max_rss_bytes": 12861440,
+      "samples": [
+        {
+          "wall_ms": 9.81554199825041,
+          "max_rss_bytes": 12861440
+        },
+        {
+          "wall_ms": 9.558333000313723,
+          "max_rss_bytes": 12861440
+        },
+        {
+          "wall_ms": 9.33962500130292,
+          "max_rss_bytes": 12894208
+        },
+        {
+          "wall_ms": 10.141542003111681,
+          "max_rss_bytes": 12861440
+        },
+        {
+          "wall_ms": 9.574583997164154,
+          "max_rss_bytes": 12795904
+        }
+      ]
+    },
+    "collection_limit_10": {
+      "median_wall_ms": 9.91049999720417,
+      "median_max_rss_bytes": 12877824,
+      "samples": [
+        {
+          "wall_ms": 9.728832999826409,
+          "max_rss_bytes": 12894208
+        },
+        {
+          "wall_ms": 10.088084000017261,
+          "max_rss_bytes": 12877824
+        },
+        {
+          "wall_ms": 9.91049999720417,
+          "max_rss_bytes": 12877824
+        },
+        {
+          "wall_ms": 9.063083001819905,
+          "max_rss_bytes": 12894208
+        },
+        {
+          "wall_ms": 10.357957999076461,
+          "max_rss_bytes": 12845056
+        }
+      ]
+    },
+    "search_no_match": {
+      "median_wall_ms": 78.49924999754876,
+      "median_max_rss_bytes": 13664256,
+      "samples": [
+        {
+          "wall_ms": 75.63987499815994,
+          "max_rss_bytes": 13598720
+        },
+        {
+          "wall_ms": 78.49924999754876,
+          "max_rss_bytes": 13664256
+        },
+        {
+          "wall_ms": 77.38708300166763,
+          "max_rss_bytes": 13631488
+        },
+        {
+          "wall_ms": 81.46562499678112,
+          "max_rss_bytes": 13762560
+        },
+        {
+          "wall_ms": 84.24333399671013,
+          "max_rss_bytes": 13795328
+        }
+      ]
+    },
+    "search_cjk_hit": {
+      "median_wall_ms": 73.36500000019441,
+      "median_max_rss_bytes": 14090240,
+      "samples": [
+        {
+          "wall_ms": 74.05962499979069,
+          "max_rss_bytes": 14090240
+        },
+        {
+          "wall_ms": 79.32608400005847,
+          "max_rss_bytes": 14041088
+        },
+        {
+          "wall_ms": 73.36500000019441,
+          "max_rss_bytes": 14123008
+        },
+        {
+          "wall_ms": 73.08837500022491,
+          "max_rss_bytes": 14090240
+        },
+        {
+          "wall_ms": 71.7410409997683,
+          "max_rss_bytes": 14041088
+        }
+      ]
+    },
+    "search_ascii_hit": {
+      "median_wall_ms": 68.84695800181362,
+      "median_max_rss_bytes": 14024704,
+      "samples": [
+        {
+          "wall_ms": 68.95004200123367,
+          "max_rss_bytes": 14041088
+        },
+        {
+          "wall_ms": 68.37049999739975,
+          "max_rss_bytes": 14090240
+        },
+        {
+          "wall_ms": 69.71237499965355,
+          "max_rss_bytes": 13910016
+        },
+        {
+          "wall_ms": 68.84695800181362,
+          "max_rss_bytes": 14024704
+        },
+        {
+          "wall_ms": 68.57449999733944,
+          "max_rss_bytes": 14024704
+        }
+      ]
+    },
+    "search_two_chars_no_match": {
+      "median_wall_ms": 73.46325000253273,
+      "median_max_rss_bytes": 13729792,
+      "samples": [
+        {
+          "wall_ms": 74.2632080000476,
+          "max_rss_bytes": 13762560
+        },
+        {
+          "wall_ms": 72.89558300180943,
+          "max_rss_bytes": 13729792
+        },
+        {
+          "wall_ms": 73.21820899960585,
+          "max_rss_bytes": 13664256
+        },
+        {
+          "wall_ms": 73.46325000253273,
+          "max_rss_bytes": 13729792
+        },
+        {
+          "wall_ms": 75.43791599891847,
+          "max_rss_bytes": 13729792
+        }
+      ]
+    },
+    "tui_snapshot": {
+      "median_wall_ms": 12.430374998075422,
+      "median_max_rss_bytes": 15499264,
+      "samples": [
+        {
+          "wall_ms": 12.430374998075422,
+          "max_rss_bytes": 15515648
+        },
+        {
+          "wall_ms": 12.157250002928777,
+          "max_rss_bytes": 15499264
+        },
+        {
+          "wall_ms": 12.01112499984447,
+          "max_rss_bytes": 15499264
+        },
+        {
+          "wall_ms": 12.639125001442153,
+          "max_rss_bytes": 15499264
+        },
+        {
+          "wall_ms": 12.656167000386631,
+          "max_rss_bytes": 15450112
+        }
+      ]
+    }
+  }
+}

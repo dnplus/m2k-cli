@@ -1,0 +1,117 @@
+{
+  "binary": "<local>/m2k",
+  "binary_sha256": "d141e3453b7b4374adb9135e053f84def97c5ebb2f3364d4b61db56160c77f67",
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "fixture": "<local>/efficiency-fixture",
+  "mail_count": 4000,
+  "mail_base64_chars_each": 65536,
+  "inbox_count": 100,
+  "warmup_runs": 1,
+  "sample_runs": 5,
+  "results": {
+    "list_limit_10": {
+      "median_wall_ms": 8.411459042690694,
+      "median_max_rss_bytes": 12468224,
+      "samples": [
+        {
+          "wall_ms": 12.608708930201828,
+          "max_rss_bytes": 12435456
+        },
+        {
+          "wall_ms": 10.051625082269311,
+          "max_rss_bytes": 12566528
+        },
+        {
+          "wall_ms": 7.944291923195124,
+          "max_rss_bytes": 12435456
+        },
+        {
+          "wall_ms": 8.411459042690694,
+          "max_rss_bytes": 12468224
+        },
+        {
+          "wall_ms": 7.425833959132433,
+          "max_rss_bytes": 12468224
+        }
+      ]
+    },
+    "collection_limit_10": {
+      "median_wall_ms": 6.492665968835354,
+      "median_max_rss_bytes": 12484608,
+      "samples": [
+        {
+          "wall_ms": 6.6882090177387,
+          "max_rss_bytes": 12484608
+        },
+        {
+          "wall_ms": 6.441208999603987,
+          "max_rss_bytes": 12484608
+        },
+        {
+          "wall_ms": 6.493750028312206,
+          "max_rss_bytes": 12468224
+        },
+        {
+          "wall_ms": 6.492665968835354,
+          "max_rss_bytes": 12517376
+        },
+        {
+          "wall_ms": 6.064457935281098,
+          "max_rss_bytes": 12435456
+        }
+      ]
+    },
+    "search_no_match": {
+      "median_wall_ms": 54.56425005104393,
+      "median_max_rss_bytes": 13434880,
+      "samples": [
+        {
+          "wall_ms": 56.38849991373718,
+          "max_rss_bytes": 13451264
+        },
+        {
+          "wall_ms": 55.56441692169756,
+          "max_rss_bytes": 13402112
+        },
+        {
+          "wall_ms": 53.76912502106279,
+          "max_rss_bytes": 13434880
+        },
+        {
+          "wall_ms": 53.663707920350134,
+          "max_rss_bytes": 13434880
+        },
+        {
+          "wall_ms": 54.56425005104393,
+          "max_rss_bytes": 13451264
+        }
+      ]
+    },
+    "tui_snapshot": {
+      "median_wall_ms": 44.23437500372529,
+      "median_max_rss_bytes": 23871488,
+      "samples": [
+        {
+          "wall_ms": 44.478500029072165,
+          "max_rss_bytes": 23822336
+        },
+        {
+          "wall_ms": 44.29041699040681,
+          "max_rss_bytes": 23904256
+        },
+        {
+          "wall_ms": 44.13383302744478,
+          "max_rss_bytes": 23887872
+        },
+        {
+          "wall_ms": 44.03041605837643,
+          "max_rss_bytes": 23855104
+        },
+        {
+          "wall_ms": 44.23437500372529,
+          "max_rss_bytes": 23871488
+        }
+      ]
+    }
+  }
+}

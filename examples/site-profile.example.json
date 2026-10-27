@@ -1,0 +1,16 @@
+{
+  "name": "example",
+  "server": "mail.example.test",
+  "company_directory_root": "EXAMPLE_ALL",
+  "sites": [
+    { "name": "North", "prefixes": ["N-"] },
+    { "name": "South", "prefixes": ["S-"] }
+  ],
+  "default_site": "North",
+  "room_capacity_from_name_suffix": true,
+  "rooms": [
+    { "name": "N-Board_12", "access": "example-north-board" },
+    { "name": "N-Focus_04", "access": "example-north-focus" },
+    { "name": "S-Huddle_06", "access": "example-south-huddle" }
+  ]
+}
