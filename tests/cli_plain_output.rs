@@ -205,7 +205,12 @@ fn json_list_keeps_full_ids_bodies_and_other_fields_for_every_kind() {
     let dir = seed(&items);
     for kind in [Kind::Mail, Kind::Calendar, Kind::Contacts] {
         let kind_name = kind.to_string();
-        let listed = json(&dir, &[&kind_name, "list"]);
+        let mut args = vec![kind_name.as_str(), "list"];
+        if kind == Kind::Mail {
+            // Mail JSON drops raw unless --full; see the compact-list test.
+            args.push("--full");
+        }
+        let listed = json(&dir, &args);
         let rows = listed.as_array().unwrap();
         assert_eq!(rows.len(), 2);
         for original in items.iter().filter(|item| item.kind == kind) {
@@ -213,13 +218,30 @@ fn json_list_keeps_full_ids_bodies_and_other_fields_for_every_kind() {
             assert_eq!(actual, &serde_json::to_value(original).unwrap());
         }
     }
+    let compact = json(&dir, &["mail", "list"]);
+    for original in items.iter().filter(|item| item.kind == Kind::Mail) {
+        let mut expected = original.clone();
+        expected.raw.clear();
+        let actual = compact
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == original.id)
+            .unwrap();
+        assert_eq!(actual, &serde_json::to_value(&expected).unwrap());
+    }
     assert_unchanged(&dir, &items);
 }
 
 #[test]
 fn mail_read_full_flags_are_discoverable_and_raw_conflicts_with_full() {
     let dir = seed(&[]);
-    for args in [["mail", "show", "--help"], ["mail", "thread", "--help"]] {
+    for args in [
+        ["mail", "show", "--help"],
+        ["mail", "thread", "--help"],
+        ["mail", "list", "--help"],
+        ["mail", "search", "--help"],
+    ] {
         let help = plain(&dir, &args);
         assert!(help.contains("--full"));
     }
@@ -298,6 +320,65 @@ fn json_show_filters_body_and_omits_raw_by_default_but_full_preserves_both() {
     assert_eq!(full["text"], items[0].text);
     assert_eq!(full["raw"], items[0].raw);
     assert_unchanged(&dir, &items);
+}
+
+// Agents list mail with --json on every turn; a single attachment-bearing
+// message used to put megabytes of base64 into their context.
+#[test]
+fn json_list_and_search_omit_raw_by_default_but_full_restores_it() {
+    let payload = STANDARD.encode(vec![0x5a_u8; 64 * 1024]);
+    let mut original = item(
+        Kind::Mail,
+        "with-attachment",
+        "季報附件",
+        "ATTACHED_REPLY\n\nOn Tue, 6 Oct 2026, Alice wrote:\n> ATTACHED_QUOTED_SECRET",
+        "2026-10-07T12:00:00Z",
+    );
+    original.raw = format!(
+        "From: sender@example.test\r\nSubject: =?UTF-8?B?{}?=\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{}\r\n--b\r\nContent-Type: application/octet-stream; name=report.bin\r\nContent-Transfer-Encoding: base64\r\n\r\n{payload}\r\n--b--\r\n",
+        STANDARD.encode("季報附件"),
+        original.text
+    );
+    let dir = seed(std::slice::from_ref(&original));
+    for args in [
+        vec!["mail", "list"],
+        vec!["mail", "list", "--collection", "INBOX"],
+        vec!["mail", "search", "季報附件"],
+    ] {
+        let compact = json(&dir, &args);
+        let found = compact
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == "with-attachment")
+            .unwrap_or_else(|| panic!("{args:?} missed the fixture: {compact}"));
+        assert_eq!(found["raw"], "", "{args:?}");
+        assert_eq!(found["text"].as_str().unwrap().trim(), "ATTACHED_REPLY");
+        assert_eq!(
+            found["attachments"],
+            serde_json::to_value(&original.attachments).unwrap()
+        );
+        assert!(!compact.to_string().contains(&payload[..64]), "{args:?}");
+        assert!(!compact.to_string().contains("ATTACHED_QUOTED_SECRET"));
+
+        let mut full_args = args.clone();
+        full_args.push("--full");
+        let full = json(&dir, &full_args);
+        let found = full
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == "with-attachment")
+            .unwrap();
+        assert_eq!(found["raw"], original.raw, "{full_args:?}");
+        assert_eq!(found["text"], original.text);
+    }
+    // Plain-text rows never carried raw; --full is accepted there as a no-op.
+    assert_eq!(
+        plain(&dir, &["mail", "list"]),
+        plain(&dir, &["mail", "list", "--full"])
+    );
+    assert_unchanged(&dir, &[original]);
 }
 
 #[test]

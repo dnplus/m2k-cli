@@ -219,11 +219,20 @@ pub enum MailCommand {
     #[command(flatten)]
     Workflow(m2k::mail_workflow::MailWorkflowCommand),
     Folders,
-    List(ListArgs),
+    #[command(about = "列出郵件；JSON 預設只含新回覆正文且 raw 為空，--full 恢復完整內容")]
+    List {
+        #[command(flatten)]
+        args: ListArgs,
+        #[arg(long, help = "JSON 輸出完整正文與 RFC822 raw")]
+        full: bool,
+    },
+    #[command(about = "搜尋郵件；JSON 預設只含新回覆正文且 raw 為空，--full 恢復完整內容")]
     Search {
         query: String,
         #[arg(long, default_value_t = 100)]
         limit: usize,
+        #[arg(long, help = "JSON 輸出完整正文與 RFC822 raw")]
+        full: bool,
     },
     #[command(about = "讀取指定郵件的新回覆正文；--full 包含歷史引用")]
     Show {

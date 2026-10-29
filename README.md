@@ -139,6 +139,7 @@ m2k mail folders
 m2k mail list --collection INBOX
 m2k mail search '專案'
 m2k --json mail list --query '會議'
+m2k --json mail list --full
 m2k mail show MESSAGE_ID
 m2k mail show MESSAGE_ID --full
 m2k mail show MESSAGE_ID --raw
@@ -163,7 +164,7 @@ IMAP 同步使用 `BODY.PEEK`，不改已讀狀態。快取保存完整 RFC822�
 
 CLI 的郵件／行事曆／聯絡人列表採固定欄寬單行，長欄位以 `…` 截斷，不畫框線、不折行；內嵌換行與控制字元轉為單行文字。完整 ID／主旨等欄位請使用 `--json ... list`。`meeting resources`／`meeting rooms` 文字列表也固定欄寬，精確模式每間房一列，分鐘模式每個連續空檔一列；加 `--json` 保留完整結果。
 
-`mail show MESSAGE_ID` 顯示指定郵件的新回覆正文，去除 `>` 引用行，以及 `On … wrote:`、`-----Original Message-----` 等明確歷史回覆區塊。`mail thread --id MESSAGE_ID`／`--subject '主旨'` 預設只顯示同主旨最新一封的新正文；`--full` 才顯示歷史郵件與引用，`thread --full --limit N` 限制最新 N 封。過濾只影響顯示，不修改 SQLite、raw 或 TUI；`show --raw` 仍輸出完整 RFC822。JSON 讀信也套用同一預設，`text` 為新正文且 `raw` 為空；加 `--full` 恢復完整 text／raw。引用辨識採文字規則，特殊格式可用 `--full` 查看原文。
+`mail show MESSAGE_ID` 顯示指定郵件的新回覆正文，去除 `>` 引用行，以及 `On … wrote:`、`-----Original Message-----` 等明確歷史回覆區塊。`mail thread --id MESSAGE_ID`／`--subject '主旨'` 預設只顯示同主旨最新一封的新正文；`--full` 才顯示歷史郵件與引用，`thread --full --limit N` 限制最新 N 封。過濾只影響顯示，不修改 SQLite、raw 或 TUI；`show --raw` 仍輸出完整 RFC822。JSON 讀信也套用同一預設，`text` 為新正文且 `raw` 為空；加 `--full` 恢復完整 text／raw。`--json mail list`／`mail search` 亦同：每筆 `text` 為新回覆正文、`raw` 為空字串，`attachments` 只保留中繼資料（index、filename、content_type、size），附件內容用 `mail attachment` 取得；加 `--full` 恢復完整 text 與 RFC822 raw。**輸出行為變更**：m2k 0.3.0 及更早版本的 JSON list／search 預設附完整 raw（含 base64 附件），依賴 raw 的腳本請改加 `--full`。引用辨識採文字規則，特殊格式可用 `--full` 查看原文。
 
 郵件保存日期優先採伺服器的 `INTERNALDATE`，避免新收到但 `Date` header 很舊的郵件被立即清除。
 
