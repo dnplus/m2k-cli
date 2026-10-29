@@ -454,9 +454,9 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn list(dir: &Path, kind: Kind, args: ListArgs, json: bool) -> Result<()> {
+fn list(dir: &Path, kind: Kind, args: ListArgs, full: bool, json: bool) -> Result<()> {
     let store = checked_store(dir)?;
-    let items = if json {
+    let mut items = if json {
         store.list(
             kind,
             args.query.as_deref(),
@@ -472,6 +472,13 @@ fn list(dir: &Path, kind: Kind, args: ListArgs, json: bool) -> Result<()> {
         )?
     };
     if json {
+        if kind == Kind::Mail && !full {
+            for item in &mut items {
+                provider::mail::normalize_cached(item)?;
+                item.text = m2k::mail_read::latest_reply(&item.text);
+                item.raw.clear();
+            }
+        }
         return emit(&items, true);
     }
     println!("{}", list_row("ID", "時間", "主旨 / 姓名", "來源 / 詳情"));
@@ -542,8 +549,8 @@ fn mail_command(dir: &Path, cmd: MailCommand, json: bool) -> Result<()> {
         MailCommand::Watch(args) => m2k::mail_webhook::run(dir, args)?,
         MailCommand::Workflow(command) => m2k::mail_workflow::execute(dir, command, json)?,
         MailCommand::Folders => emit(&checked_store(dir)?.collections(Kind::Mail)?, json)?,
-        MailCommand::List(args) => list(dir, Kind::Mail, args, json)?,
-        MailCommand::Search { query, limit } => list(
+        MailCommand::List { args, full } => list(dir, Kind::Mail, args, full, json)?,
+        MailCommand::Search { query, limit, full } => list(
             dir,
             Kind::Mail,
             ListArgs {
@@ -551,6 +558,7 @@ fn mail_command(dir: &Path, cmd: MailCommand, json: bool) -> Result<()> {
                 collection: None,
                 limit,
             },
+            full,
             json,
         )?,
         MailCommand::Show { id, raw, full } => show(dir, &id, Kind::Mail, raw, full, json)?,
@@ -670,7 +678,7 @@ fn mail_command(dir: &Path, cmd: MailCommand, json: bool) -> Result<()> {
 fn dav_command(dir: &Path, kind: Kind, cmd: DavCommand, json: bool) -> Result<()> {
     match cmd {
         DavCommand::Collections => emit(&checked_store(dir)?.collections(kind)?, json)?,
-        DavCommand::List(args) => list(dir, kind, args, json)?,
+        DavCommand::List(args) => list(dir, kind, args, true, json)?,
         DavCommand::Search { query, limit } => list(
             dir,
             kind,
@@ -679,6 +687,7 @@ fn dav_command(dir: &Path, kind: Kind, cmd: DavCommand, json: bool) -> Result<()
                 collection: None,
                 limit,
             },
+            true,
             json,
         )?,
         DavCommand::Show { id, raw } => show(dir, &id, kind, raw, false, json)?,

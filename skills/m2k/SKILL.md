@@ -12,6 +12,7 @@ description: Operate the m2k CLI for Mail2000 email, meeting room availability, 
 常見任務的入口與範例；以剛讀到的 help 校正參數，替換日期、收件人與檔案路徑：
 
 - 查會議室：先讀 `m2k date-range --help`、`m2k meeting --help` 與 `m2k meeting rooms --help`。例如「找下週五下午兩點到三點、北區至少八人的會議室」：先執行 `m2k --json date-range '下週五'`，從回傳日期與時區推導該日 14:00–15:00 的精確 RFC3339 時間 `$START`、`$END`，再執行 `m2k --json meeting rooms --site 北區 --capacity 8 --start "$START" --end "$END"`。若需求是「下週五任一小時空檔」，以回傳日期範圍為搜尋窗加 `--minutes 60`，列出每間會議室的 `available_slots`。
+- 讀信：`m2k --json mail list`／`mail search` 預設只回傳新回覆正文、`raw` 為空、附件只有中繼資料；需要單封全文用 `mail show ID --full`，附件用 `mail attachment`。除非使用者要求原始郵件，不要對 list／search 加 `--full`，它會帶回完整 RFC822 與 base64 附件。
 - 寄信：先讀 `m2k mail --help` 與 `m2k mail send --help`。把已確認的正文寫入 UTF-8 檔，例如 `m2k mail send --to colleague@example.com --subject '會議安排' --body-file /tmp/m2k-body.txt`。
 - 同步：先讀 `m2k sync --help`、`m2k watch --help` 與 `m2k directory sync --help`。預設只同步郵件與行事曆；郵件採 UID／旗標增量，例如 `m2k --json sync --kind mail`。行事曆以 ETag 重用正文，尚無伺服器 sync-token；`watch` 每個設定週期更新現在前後 30 天，首次與距上次成功完整同步至少 24 小時時更新完整 retention 範圍。聯絡人只在使用者要求時，用 `directory sync --scope company` 手動全量更新，或選 `--scope department`／指定分支。TUI 聯絡人頁只讀本機，`Shift-R` 才同步全公司；保留成功與錯誤結果。
 - 使用 TUI：先讀 `m2k tui --help`，在互動終端執行 `m2k tui`，於畫面按 `?` 查看操作。無 TTY 時用 `m2k tui --snapshot` 檢視畫面。
