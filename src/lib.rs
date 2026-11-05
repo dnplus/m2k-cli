@@ -6,6 +6,7 @@ mod dav_url;
 pub mod dav_write;
 pub mod demo;
 pub mod directory;
+pub mod directory_cache;
 pub mod directory_chart;
 pub mod doctor;
 pub mod error;

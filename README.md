@@ -261,6 +261,8 @@ m2k directory chart --format mermaid
 
 `directory chart` 從本機快取確定性輸出部門組織圖，不連線、不呼叫模型，相同快取得到相同結果。預設為縮排 Markdown：每個部門列出直屬成員：全名取自 vCard `N`（Mail2000 的 `FN` 只是帳號），括號內為帳號，另列職稱、分機或電話；email 為「帳號@最常見網域」時不重複列出，例外才另列，`--json` 保留完整 `emails` 與 `username`，方便直接當代理程式脈絡；`--json` 為巢狀結構，`--format mermaid` 只畫部門與直屬人數。最上層通訊錄是全公司名單，只列沒有部門歸屬的人；兼任多個部門的人在各部門都會列出，總人數只算一次。`--branch` 只輸出指定分支及其子部門，可填 path（前導 `/` 可省略）、名稱或 URL。Mail2000 的 vCard 沒有主管或匯報欄位，所以組織圖只呈現部門歸屬，不畫匯報線也不推估主管，輸出內會註明。需要先以 `directory sync --scope company` 同步聯絡人。
 
+全公司同步耗時較長時，可由一台機器同步後共用快取：`m2k directory export --output /shared/m2k-dir.json` 把本機快取中公司通訊錄根（預設取站台設定的 `company_directory_root`，可用 `--addressbook` 指定分支）及其子部門的聯絡人寫成 `m2k-directory/1` JSON（暫存檔加 rename 原子寫入），不含個人通訊錄。其他資料目錄設定 `M2K_DIRECTORY_CACHE=/shared/m2k-dir.json` 後，`directory search`／`resolve`／`self`／`chart` 會在檔案的 `generated_at` 比上次匯入新時，先把檔案內各分支當成權威快照匯入本機快取（已離職者會被移除），再照常查詢；同一份檔案不會重複匯入。檔案不存在或無法讀取時只在 stderr 警告並沿用本機快取；匯入只寫入自己的資料目錄，檔案所在目錄可唯讀。
+
 ## 會議與會議室
 
 ```sh

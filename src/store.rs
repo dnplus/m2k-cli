@@ -278,6 +278,34 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // A cache written before DAV collection ids were canonicalized can hold
+        // the same collection under another spelling (e.g. `%3d` vs `%3D`). The
+        // DAV sync already treats those rows as this collection's previous
+        // items, so the snapshot replaces them too instead of colliding on ids.
+        let identities = collection_ids
+            .iter()
+            .map(|id| crate::dav_url::identity(id))
+            .collect::<HashSet<_>>();
+        let aliases = tx
+            .prepare("SELECT id FROM collections WHERE kind = ?1")?
+            .query_map(params![kind], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|id| {
+                !collection_ids.contains(id) && identities.contains(&crate::dav_url::identity(id))
+            })
+            .collect::<Vec<_>>();
+        for alias in &aliases {
+            tx.execute(
+                "DELETE FROM collections WHERE kind = ?1 AND id = ?2",
+                params![kind, alias],
+            )?;
+        }
+        let scope = collection_ids
+            .iter()
+            .cloned()
+            .chain(aliases)
+            .collect::<HashSet<_>>();
         for collection in &encoded_collections {
             tx.execute(
                 "INSERT INTO collections(kind, id, name) VALUES (?1, ?2, ?3)
@@ -285,7 +313,7 @@ impl Store {
                 params![kind, collection.0, collection.1],
             )?;
         }
-        replace_items(&tx, kind, Some(&collection_ids), &encoded_items, seen_at)?;
+        replace_items(&tx, kind, Some(&scope), &encoded_items, seen_at)?;
         if snapshot.kind == Kind::Contacts {
             crate::contact_index::rebuild(&tx)?;
         }
@@ -670,6 +698,31 @@ impl Store {
             "INSERT INTO metadata(key, value) VALUES ('sync.calendar.full_success_at', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![now.to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// `generated_at` of the shared directory cache file last imported here.
+    pub fn directory_cache_imported(&self) -> Result<Option<DateTime<Utc>>> {
+        let value: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'sync.contacts.directory_cache_generated_at'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(value
+            .and_then(|value| DateTime::parse_from_rfc3339(&value).ok())
+            .map(|time| time.with_timezone(&Utc)))
+    }
+
+    pub fn mark_directory_cache_imported(&self, generated_at: DateTime<Utc>) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO metadata(key, value)
+             VALUES ('sync.contacts.directory_cache_generated_at', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![generated_at.to_rfc3339()],
         )?;
         Ok(())
     }
