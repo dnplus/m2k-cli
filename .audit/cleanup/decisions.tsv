@@ -11,3 +11,6 @@ ts	phase	decision	why	evidence	result
 2026-11-05T06:47:27Z	no-comments	採納 3 個簡單修正：WINDOW_CHECK_INTERVAL、MAX_EXTENSION_DIGITS 常數，indexed_predicate 參數 fts_index 改名 bind_slot	名稱比原本的註解更能說明用途	src/sync.rs, src/directory_chart.rs, src/store/search.rs	gate 通過 538 tests
 2026-11-05T06:47:27Z	no-comments	退回 2 個舉報：store.rs identities 舊編碼別名、8 個測試檔重複的 NO_KEYCHAIN	前者是剛合併的 PR #2 修的真實快取 bug；後者是各自獨立的 integration test crate，為一行常數加共用模組不划算	src/store.rs:279, tests/*.rs	rejected
 2026-11-05T06:47:27Z	no-comments	需要重新設計型別的舉報（mail_graph 的 Option/具名 struct、sync 決策型別、dav_write 錯誤順序、demo own_collection、Store::open 的 eprintln 等）列為待辦，沒跑 architect	這次的目標是清理，不是重構；改型別是新的工作	Comment Sicko 回報	open
+2026-11-05T06:54:00Z	verify-skill	沿用既有的 .agents/skills/verify-m2k 加 .claude symlink，依乾淨 codebase 重建：更新 SKILL.md、m2kv 把 M2K_* 環境變數寫進證據，新增 mail-graph、directory-chart、directory-export-cache 三份 feature 檔	skill 本來就存在，重做一份會有兩個來源；新功能沒有對應的 feature 檔	.agents/skills/verify-m2k/, .tmp/verify/20261105-145105-6490	實跑 launch→doctor→directory chart/export→cleanup，證據保留
+2026-11-05T06:54:00Z	verify-skill	我自己照 mail-graph.md 再跑一次：mail graph exit 0，--days 0 exit 1	subagent 說 mail-graph 只在修改前的探索中跑過	.tmp/verify/20261105-145347-12115	VERIFIED
+2026-11-05T06:54:00Z	verify-skill	其他 feature 檔沒重跑，只確認裡面引用的 UI 字串還在 src；真實伺服器路徑沒跑	demo 資料不能連線；這次只改到新功能	subagent 回報	open

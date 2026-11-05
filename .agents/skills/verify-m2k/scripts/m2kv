@@ -71,6 +71,7 @@ cmd_cli() {
   code=$?
   set -e
   {
+    env | grep '^M2K_' | grep -v '^M2K_PASSWORD=' | sed 's/^/env: /' || true
     printf '$ m2k --data-dir <run>'; printf ' %q' "$@"; printf '\n'
     echo "exit: $code"
     echo "--- stdout"; cat "$out"
