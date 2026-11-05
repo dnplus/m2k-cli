@@ -1,0 +1,5 @@
+ts	phase	decision	why	evidence	result
+2026-11-05T06:30:24Z	frame	數了要清的東西：沒有私有死碼、沒有整個 repo 都沒人用的 pub 項目，只有 prune_kind 是測試專用薄包裝，加上 4 條私有舊版升級用的相容路徑	先知道規模再開始長流程	.audit/cleanup/dead-pub-items.sh, .audit/cleanup/baseline-candidates.txt	範圍小，已向使用者確認
+2026-11-05T06:30:24Z	frame	使用者選擇刪掉全部 4 條相容路徑（站台 profile 遷移提示、鑰匙圈 ACL 遷移、doctor 舊 report 欄位、舊設定自動選 profile）	私有庫要封存，公開版從 v0.3.0 起就沒有這些舊狀態	AskUserQuestion 回覆	已決定
+2026-11-05T06:30:24Z	design	單元依序執行：baseline → 刪死碼與相容路徑 → no-comments → 重建 verify-m2k → 文件 → 開 PR；每個單元都過 gate.sh	所有單元都會改同一批檔案，平行跑會互相覆寫	.audit/cleanup/gate.sh	open
+2026-11-05T06:32:52Z	harness	動任何程式碼前先跑一次 gate，存下 baseline	之後每個單元都拿新數字跟舊數字比	.audit/cleanup/gate.sh, .tmp/verify/20261105-143125-82405	545 passed, smoke OK
