@@ -38,6 +38,7 @@ Each file has an H1, one paragraph, and four H2s in order: `Sub-features`, `How 
 - [Meeting draft](./meeting-draft.md) — `meeting prepare` writes an ICS; `invite --dry-run` parses it without sending.
 - [Meeting RSVP](./meeting-rsvp.md) — `meeting rsvp` METHOD:REPLY: demo guards via m2kv, dry-run and real SMTP send against the loopback fixture.
 - [TUI workbench](./tui-workbench.md) — tabs, mail detail, contact search, clean exit.
+- [TUI org chart](./tui-org-chart.md) — contacts `v` list ↔ org chart, j/k select, Enter expand/collapse, member detail, missing-root warning.
 - [TUI reply draft](./tui-reply-draft.md) — `R` in mail detail, `$EDITOR`/built-in input, confirm, demo save-only, fixture send.
 - [Calendar create / edit / delete](./calendar-crud.md) — CLI `calendar create/update --title …`, TUI `n`/`e`/`x` with confirmation, guards, demo refusal, fixture writes and ETag conflict.
 - [Config and retention](./config-retention.md) — `config set` persists across processes.

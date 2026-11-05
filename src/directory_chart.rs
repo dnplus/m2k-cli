@@ -75,6 +75,13 @@ pub struct Member {
     id: String,
 }
 
+impl Member {
+    /// 對應 `DirectoryContact::id`，供 TUI 查回完整聯絡人詳情。
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+}
+
 pub fn execute(dir: &Path, args: ChartArgs, json: bool) -> Result<()> {
     let store = directory::local_store(dir)?;
     let nodes = directory::address_book_tree(&store.collections(Kind::Contacts)?, None);
