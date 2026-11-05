@@ -439,7 +439,7 @@ fn execute_cleanup(dir: &Path, plan_path: &Path, apply: bool, _json: bool) -> Re
     let mut store = Store::open(dir)?;
     store.ensure_account(&config)?;
     validate_cleanup_plan_account(&plan, &config)?;
-    let password = config::password(dir, &config)?;
+    let password = config::password(&config)?;
     let existing = store.list(Kind::Mail, None, None, usize::MAX)?;
     let snapshot = provider::mail::sync(&config, &password, &existing)
         .map_err(|error| sanitize_error(error, &password))?;

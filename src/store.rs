@@ -634,10 +634,6 @@ impl Store {
         self.prune_kinds(config, now, &[Kind::Mail, Kind::Calendar, Kind::Contacts])
     }
 
-    pub fn prune_kind(&mut self, config: &Config, now: DateTime<Utc>, kind: Kind) -> Result<usize> {
-        self.prune_kinds(config, now, &[kind])
-    }
-
     pub fn prune_kinds(
         &mut self,
         config: &Config,

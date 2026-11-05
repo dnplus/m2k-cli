@@ -155,7 +155,7 @@ pub fn run(dir: &Path) -> Report {
                 checks.push(skip(name, "設定檔不可用，無法檢查"));
             }
         }
-        (Some(cfg), false) => online(dir, cfg, &mut checks),
+        (Some(cfg), false) => online(cfg, &mut checks),
     }
     checks.push(check("database", database(dir)));
     checks.push(check("sync_lock", sync_lock(dir)));
@@ -218,9 +218,9 @@ fn config_file(dir: &Path) -> Result<(String, Config)> {
     ))
 }
 
-fn online(dir: &Path, cfg: &Config, checks: &mut Vec<Check>) {
+fn online(cfg: &Config, checks: &mut Vec<Check>) {
     let from_env = std::env::var_os("M2K_PASSWORD").is_some_and(|value| !value.is_empty());
-    let password = config::read_password(dir, cfg);
+    let password = config::password(cfg);
     checks.push(check(
         "credentials",
         match &password {
@@ -305,17 +305,9 @@ fn site_profile(cfg: &Config) -> Check {
     };
     let source = match &cfg.site_profile {
         Some(spec) => format!("config 指定 {spec}"),
-        None => format!("依伺服器 {} 自動選用", cfg.imap_host),
+        None => "config 未指定".to_owned(),
     };
-    let detail = format!("{}（{source}）", profile.name);
-    if profile.is_generic() && crate::site::user_profiles_missing() {
-        return Check {
-            name: "site_profile",
-            status: Status::Warn,
-            detail: format!("{detail}；{}", crate::site::migration_hint()),
-        };
-    }
-    check("site_profile", Ok(detail))
+    check("site_profile", Ok(format!("{}（{source}）", profile.name)))
 }
 
 fn database(dir: &Path) -> Result<String> {

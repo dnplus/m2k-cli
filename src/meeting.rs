@@ -269,8 +269,6 @@ pub(crate) struct WorkingHours {
 struct ResourcesOutput {
     resources: Vec<MeetingRoom>,
     errors: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -300,8 +298,6 @@ pub struct RoomsOutput {
     pub availability: Vec<Availability>,
     pub unknown: Vec<Availability>,
     pub errors: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<String>,
     pub minutes: Option<u32>,
     pub working_hours: String,
     pub available_slots: Vec<RoomAvailabilitySlots>,
@@ -786,28 +782,11 @@ fn execute_resources(data_dir: &Path, args: ResourcesArgs, json: bool) -> Result
         args.site.as_deref(),
         args.capacity,
     )?;
-    print_warnings(&output.warnings);
     if json {
         emit(&output, "", true)
     } else {
         println!("{}", resources_text(&output));
         Ok(())
-    }
-}
-
-fn print_warnings(warnings: &[String]) {
-    for warning in warnings {
-        eprintln!("警告：{warning}");
-    }
-}
-
-/// A generic profile with no rooms usually means an upgraded install whose
-/// site profile is no longer compiled in.
-fn profile_warnings(profile: &SiteProfile, rooms: usize) -> Vec<String> {
-    if profile.is_generic() && rooms == 0 {
-        vec![crate::site::migration_hint()]
-    } else {
-        Vec::new()
     }
 }
 
@@ -1041,7 +1020,6 @@ pub fn query_rooms(data_dir: &Path, args: RoomsArgs) -> Result<RoomsOutput> {
         ResourcesOutput {
             resources,
             errors: Vec::new(),
-            warnings: Vec::new(),
         }
     } else {
         let catalog = collect_rooms(
@@ -1060,10 +1038,6 @@ pub fn query_rooms(data_dir: &Path, args: RoomsArgs) -> Result<RoomsOutput> {
         }
         catalog
     };
-    let warnings = profile_warnings(
-        &SiteProfile::for_config(Some(&config))?,
-        catalog.resources.len(),
-    );
     catalog
         .resources
         .retain(|room| room_matches_filters(room, args.site.as_deref(), args.capacity));
@@ -1260,7 +1234,6 @@ pub fn query_rooms(data_dir: &Path, args: RoomsArgs) -> Result<RoomsOutput> {
         availability: availability_results,
         unknown,
         errors,
-        warnings,
         minutes: args.minutes,
         working_hours: format_working_hours(working_hours),
         available_slots,
@@ -1277,7 +1250,6 @@ fn can_reuse_room_probe(probe: &Probe, range: &TimeRange, minutes: Option<u32>) 
 
 fn execute_rooms(data_dir: &Path, args: RoomsArgs, json: bool) -> Result<()> {
     let output = query_rooms(data_dir, args)?;
-    print_warnings(&output.warnings);
     if json {
         emit(&output, "", true)
     } else {
@@ -1438,7 +1410,7 @@ fn execute_invite(data_dir: &Path, args: InviteArgs, json: bool) -> Result<()> {
         }
         let config = config::load(data_dir)?;
         Store::open(data_dir)?.ensure_account(&config)?;
-        let password = config::password(data_dir, &config)?;
+        let password = config::password(&config)?;
         message_id = Some(provider::mail::send_invite(&config, &password, &raw)?);
     }
     let output = InviteOutput {
@@ -1488,7 +1460,7 @@ fn execute_book(data_dir: &Path, args: BookArgs, json: bool) -> Result<()> {
     let mut store = Store::open(data_dir)?;
     store.ensure_account(&config)?;
     let cached_items = store.list(Kind::Calendar, None, None, usize::MAX)?;
-    let password = config::password(data_dir, &config)?;
+    let password = config::password(&config)?;
     let mut session = new_dav_session(&config, Some(&password))?
         .ok_or_else(|| anyhow!("無法建立 Mail2000 DAV session"))?;
     let target_mode = match args.target.as_str() {
@@ -1909,7 +1881,7 @@ fn optional_online(data_dir: &Path) -> Result<(Option<Config>, Option<String>)> 
     if data_dir.join(".demo").exists() {
         return Ok((Some(config), None));
     }
-    match config::password(data_dir, &config) {
+    match config::password(&config) {
         Ok(password) => Ok((Some(config), Some(password))),
         Err(error) => Ok((
             Some(config),
@@ -1924,7 +1896,7 @@ fn required_online_or_demo(data_dir: &Path) -> Result<(Config, Option<String>)> 
     if data_dir.join(".demo").exists() {
         return Ok((config, None));
     }
-    Ok((config.clone(), Some(config::password(data_dir, &config)?)))
+    Ok((config.clone(), Some(config::password(&config)?)))
 }
 
 fn new_dav_session<'a>(
@@ -2145,16 +2117,10 @@ fn collect_rooms(
             room.capacity = profile.room_capacity(&room.name);
         }
     }
-    let warnings = if config.is_some() {
-        profile_warnings(&profile, rooms.len())
-    } else {
-        Vec::new()
-    };
     rooms.retain(|room| room_matches_filters(room, site, capacity));
     Ok(ResourcesOutput {
         resources: rooms,
         errors,
-        warnings,
     })
 }
 
@@ -3072,7 +3038,6 @@ mod room_output_tests {
             availability: Vec::new(),
             unknown: Vec::new(),
             errors: Vec::new(),
-            warnings: Vec::new(),
             minutes: None,
             working_hours: "09:30-17:30".into(),
             available_slots: Vec::new(),
@@ -3149,7 +3114,6 @@ mod room_output_tests {
         let output = ResourcesOutput {
             resources: rooms,
             errors: vec!["catalog\nproblem ".repeat(30)],
-            warnings: Vec::new(),
         };
         let before = serde_json::to_value(&output).unwrap();
         let text = resources_text(&output);

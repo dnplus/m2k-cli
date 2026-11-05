@@ -77,7 +77,7 @@ pub fn send_reply(
         bail!("展示資料不連線；請指定正式帳號的 --data-dir");
     }
     let cfg = config::load(dir)?;
-    let pass = config::password(dir, &cfg)?;
+    let pass = config::password(&cfg)?;
     let mut mail = reply_mail(&item)?;
     // 與舊 CLI 流程相同：解析完原信才讀正文。
     mail.body = read_body()?;
@@ -102,7 +102,7 @@ pub fn mask_secret(message: &str, secret: &str) -> String {
 /// 讀取目前帳號密碼並遮罩錯誤訊息；讀不到密碼就原樣顯示。
 pub fn masked_error(dir: &Path, error: anyhow::Error) -> anyhow::Error {
     let message = format!("{error:#}");
-    match config::load(dir).and_then(|cfg| config::password(dir, &cfg)) {
+    match config::load(dir).and_then(|cfg| config::password(&cfg)) {
         Ok(pass) => anyhow::anyhow!(mask_secret(&message, &pass)),
         Err(_) => anyhow::anyhow!(message),
     }

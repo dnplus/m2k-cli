@@ -346,7 +346,7 @@ fn retention_preserves_rdate_only_resource_with_an_old_master_and_future_occurre
     store
         .apply_collection_snapshot(&snapshot(Kind::Calendar, vec![recurring, plain]), now)
         .unwrap();
-    assert_eq!(store.prune_kind(&cfg, now, Kind::Calendar).unwrap(), 1);
+    assert_eq!(store.prune_kinds(&cfg, now, &[Kind::Calendar]).unwrap(), 1);
     assert_eq!(store.get("rdate-only").unwrap().raw, raw);
     assert!(store.get("old-plain").is_err());
 }
@@ -374,7 +374,7 @@ fn retention_preserves_multi_event_resource_when_first_event_is_old() {
     store
         .apply_collection_snapshot(&snapshot(Kind::Calendar, vec![multiple, plain]), now)
         .unwrap();
-    assert_eq!(store.prune_kind(&cfg, now, Kind::Calendar).unwrap(), 1);
+    assert_eq!(store.prune_kinds(&cfg, now, &[Kind::Calendar]).unwrap(), 1);
     assert_eq!(store.get("multiple").unwrap().raw, raw);
     assert!(store.get("old-plain").is_err());
 }
@@ -395,7 +395,7 @@ fn retention_checks_recurrence_properties_instead_of_description_words() {
     store
         .apply_collection_snapshot(&snapshot(Kind::Calendar, vec![plain]), now)
         .unwrap();
-    assert_eq!(store.prune_kind(&cfg, now, Kind::Calendar).unwrap(), 1);
+    assert_eq!(store.prune_kinds(&cfg, now, &[Kind::Calendar]).unwrap(), 1);
     assert!(store.get("plain-description").is_err());
 }
 

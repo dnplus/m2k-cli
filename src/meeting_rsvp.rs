@@ -117,7 +117,7 @@ pub fn execute(data_dir: &Path, args: RsvpArgs, json: bool) -> Result<()> {
         if demo {
             bail!("展示郵件沒有本機正文");
         }
-        let secret = config::password(data_dir, &config)?;
+        let secret = config::password(&config)?;
         item = provider::mail::fetch_item(&config, &secret, &item)?;
         raw = provider::mail::raw_bytes(&item)?;
         password = Some(secret);
@@ -136,7 +136,7 @@ pub fn execute(data_dir: &Path, args: RsvpArgs, json: bool) -> Result<()> {
     if !args.dry_run {
         let password = match password {
             Some(password) => password,
-            None => config::password(data_dir, &config)?,
+            None => config::password(&config)?,
         };
         let parent = mailparse::parse_mail(&raw)
             .ok()

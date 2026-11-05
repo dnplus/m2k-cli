@@ -186,10 +186,10 @@ fn webhook_failure_survives_restart_and_retries_identical_event_until_success() 
     retention.mail_retention_days = 1;
     assert_eq!(
         store
-            .prune_kind(
+            .prune_kinds(
                 &retention,
                 Utc::now() + chrono::Duration::days(2),
-                Kind::Mail
+                &[Kind::Mail]
             )
             .unwrap(),
         1

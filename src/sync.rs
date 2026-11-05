@@ -282,7 +282,7 @@ fn run_with_policy(
             bail!("展示資料不連線；請在另一個資料目錄執行 m2k init");
         }
         let cfg = config::load(data_dir)?;
-        let password = config::password(data_dir, &cfg)?;
+        let password = config::password(&cfg)?;
         let mut store = Store::open(data_dir)?;
         store.ensure_account(&cfg)?;
         let mut results = Vec::new();
@@ -352,7 +352,7 @@ pub fn refresh_calendar(data_dir: &Path, center: DateTime<Utc>) -> Result<Vec<Sy
             bail!("展示資料不連線；請在另一個資料目錄執行 m2k init");
         }
         let cfg = config::load(data_dir)?;
-        let password = config::password(data_dir, &cfg)?;
+        let password = config::password(&cfg)?;
         let mut store = Store::open(data_dir)?;
         store.ensure_account(&cfg)?;
         let existing = store.list(Kind::Calendar, None, None, usize::MAX)?;

@@ -225,7 +225,7 @@ fn execute(cli: Cli) -> Result<()> {
             };
             match command {
                 AuthCommand::Logout => {
-                    config::delete_password(&dir, &cfg)?;
+                    config::delete_password(&cfg)?;
                     emit(&serde_json::json!({"credential_removed":true}), json)?;
                 }
                 AuthCommand::Login { no_store, .. } => {
@@ -241,12 +241,12 @@ fn execute(cli: Cli) -> Result<()> {
                         config::save(&dir, &cfg)?;
                     }
                     if !no_store {
-                        config::save_password(&dir, &cfg, &password)?;
+                        config::save_password(&cfg, &password)?;
                     }
                     emit(&auth_verification_output(fallback, Some(!no_store)), json)?;
                 }
                 AuthCommand::Check => {
-                    let pass = config::password(&dir, &cfg)?;
+                    let pass = config::password(&cfg)?;
                     let fallback = check_credentials(&cfg, &pass)?;
                     emit(&auth_verification_output(fallback, None), json)?;
                 }
@@ -365,7 +365,7 @@ fn online(dir: &Path) -> Result<(config::Config, String)> {
     }
     let cfg = config::load(dir)?;
     Store::open(dir)?.ensure_account(&cfg)?;
-    let pass = config::password(dir, &cfg)?;
+    let pass = config::password(&cfg)?;
     Ok((cfg, pass))
 }
 

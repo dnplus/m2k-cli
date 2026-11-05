@@ -18,7 +18,7 @@ fn online(dir: &Path) -> Result<(Config, String)> {
     }
     let cfg = config::load(dir)?;
     Store::open(dir)?.ensure_account(&cfg)?;
-    let pass = config::password(dir, &cfg)?;
+    let pass = config::password(&cfg)?;
     Ok((cfg, pass))
 }
 

@@ -58,20 +58,6 @@ fn user_profile_path(name: &str) -> Option<PathBuf> {
     user_profile_dir().map(|dir| dir.join(format!("{name}.json")))
 }
 
-/// True when no user profile file exists, as right after upgrading from a
-/// version that compiled the site profile in.
-pub fn user_profiles_missing() -> bool {
-    SiteProfile::user_profile_files().is_empty()
-}
-
-/// How to restore a site profile that older versions compiled in.
-pub fn migration_hint() -> String {
-    format!(
-        "目前使用通用 {DEFAULT_PROFILE} profile，沒有會議室清單與公司通訊錄根。若升級前依賴內建的站台 profile，請把舊版的 src/site/<name>.json 複製到 {}/<name>.json（例如 git show <舊版 commit>:src/site/<name>.json），詳見 README「從內建站台 profile 遷移」",
-        user_profile_dir_text()
-    )
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SiteProfile {
@@ -207,14 +193,10 @@ impl SiteProfile {
         Ok(profile)
     }
 
-    /// The builtin or user profile whose server is `host`, otherwise the
-    /// generic profile. Unreadable or invalid user profiles are skipped here;
-    /// selecting one by name reports its error.
-    pub fn for_host(host: &str) -> Self {
-        Self::named_for_host(host).1
-    }
-
-    /// Like `for_host`, with the name that selects it in `site_profile`.
+    /// The builtin or user profile whose server is `host`, with the name that
+    /// selects it in `site_profile`, otherwise the generic profile. Unreadable
+    /// or invalid user profiles are skipped here; selecting one by name reports
+    /// its error.
     pub fn named_for_host(host: &str) -> (String, Self) {
         BUILTIN_PROFILES
             .iter()
@@ -233,7 +215,7 @@ impl SiteProfile {
         match config {
             Some(config) => match config.site_profile.as_deref() {
                 Some(spec) => Self::load(spec),
-                None => Ok(Self::for_host(&config.imap_host)),
+                None => Ok(Self::generic()),
             },
             None => Ok(Self::generic()),
         }

@@ -30,7 +30,7 @@ pub struct Config {
     pub calendar_retention_days: u32,
     pub contacts_retention_days: u32,
     /// Site profile name or path to a profile JSON file; see `site`. `init`
-    /// always sets it; configs from older versions may lack it.
+    /// always sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site_profile: Option<String>,
     /// 沒有自動信標頭的系統寄件者：完整地址、`@網域` 或 local part（不分大小寫）。
@@ -178,63 +178,27 @@ pub fn save(data_dir: &std::path::Path, config: &Config) -> Result<()> {
 
 const CREDENTIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CredentialSource {
-    Env,
-    Store,
-}
-
-pub fn password(data_dir: &std::path::Path, config: &Config) -> Result<String> {
-    let (value, source) = read_with_source(std::env::var_os("M2K_PASSWORD"), config)?;
-    #[cfg(target_os = "macos")]
-    if let Err(error) = migrate_after_read(&security_command(), data_dir, config, &value, source) {
-        eprintln!("警告：{error:#}");
-    }
-    #[cfg(not(target_os = "macos"))]
-    let _ = (data_dir, source);
-    Ok(value)
-}
-
-/// Like [`password`], but never rewrites the keychain item or marker file.
-pub fn read_password(data_dir: &std::path::Path, config: &Config) -> Result<String> {
-    let _ = data_dir;
-    Ok(read_with_source(std::env::var_os("M2K_PASSWORD"), config)?.0)
-}
-
-// The environment is read once by the caller, so the source reported here is
-// the one the value actually came from.
-fn read_with_source(
-    env: Option<std::ffi::OsString>,
-    config: &Config,
-) -> Result<(String, CredentialSource)> {
+pub fn password(config: &Config) -> Result<String> {
     config.validate()?;
-    match env {
+    match std::env::var_os("M2K_PASSWORD") {
         Some(value) if !value.is_empty() => value
             .into_string()
-            .map(|value| (value, CredentialSource::Env))
             .map_err(|_| anyhow!("M2K_PASSWORD 不是有效的 UTF-8")),
-        _ => platform_get_password(config).map(|value| (value, CredentialSource::Store)),
+        _ => platform_get_password(config),
     }
 }
 
-pub fn save_password(data_dir: &std::path::Path, config: &Config, value: &str) -> Result<()> {
+pub fn save_password(config: &Config, value: &str) -> Result<()> {
     config.validate()?;
-    let _ = data_dir;
     if value.is_empty() {
         return Err(anyhow!("密碼不可為空白"));
     }
-    platform_set_password(config, value).map_err(|error| anyhow!("無法儲存系統密碼：{error}"))?;
-    // Best effort: a missing marker only costs one redundant rewrite later.
-    #[cfg(target_os = "macos")]
-    let _ = write_acl_marker(data_dir, &credential_key(config)?);
-    Ok(())
+    platform_set_password(config, value).map_err(|error| anyhow!("無法儲存系統密碼：{error}"))
 }
 
-pub fn delete_password(data_dir: &std::path::Path, config: &Config) -> Result<()> {
+pub fn delete_password(config: &Config) -> Result<()> {
     config.validate()?;
-    let _ = data_dir;
     platform_delete_password(config).map_err(|error| anyhow!("無法刪除系統密碼：{error}"))?;
-    let _ = fs::remove_file(data_dir.join(KEYCHAIN_ACL_MARKER));
     Ok(())
 }
 
@@ -297,53 +261,6 @@ fn platform_delete_password(config: &Config) -> Result<()> {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(error.into()),
     }
-}
-
-// Items created by earlier m2k builds (keyring crate) trust only the binary
-// that created them, so reading them through `security` may prompt once. After
-// such a read the item is recreated by `security` so its ACL trusts
-// `/usr/bin/security`; the marker records which credential key is done.
-const KEYCHAIN_ACL_MARKER: &str = "keychain-acl-migrated";
-
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn needs_acl_migration(marker: Option<&str>, key: &str) -> bool {
-    marker.map(str::trim) != Some(key)
-}
-
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn migrate_after_read(
-    runner: &dyn crate::keychain::Runner,
-    data_dir: &std::path::Path,
-    config: &Config,
-    value: &str,
-    source: CredentialSource,
-) -> Result<()> {
-    // Only a value read from the keychain may be written back to it.
-    if source != CredentialSource::Store {
-        return Ok(());
-    }
-    let key = credential_key(config)?;
-    let marker = fs::read_to_string(data_dir.join(KEYCHAIN_ACL_MARKER)).ok();
-    if !needs_acl_migration(marker.as_deref(), &key) {
-        return Ok(());
-    }
-    crate::keychain::delete(runner, KEYRING_SERVICE, &key).map_err(|error| {
-        anyhow!("已讀取密碼，但無法刪除舊鑰匙圈項目以改由 /usr/bin/security 管理（項目未變更）：{error}")
-    })?;
-    // The old item is gone and the password exists only in memory: retry once.
-    if crate::keychain::add(runner, KEYRING_SERVICE, &key, value).is_err() {
-        crate::keychain::add(runner, KEYRING_SERVICE, &key, value).map_err(|error| {
-            anyhow!("舊鑰匙圈項目已刪除，但由 /usr/bin/security 重新寫入失敗（已重試一次）：{error}；請重新執行 m2k auth login")
-        })?;
-    }
-    write_acl_marker(data_dir, &key)
-}
-
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn write_acl_marker(data_dir: &std::path::Path, key: &str) -> Result<()> {
-    let path = data_dir.join(KEYCHAIN_ACL_MARKER);
-    fs::write(&path, key).with_context(|| format!("無法寫入 {}", path.display()))?;
-    set_path_mode(&path, 0o600)
 }
 
 pub fn credential_key(config: &Config) -> Result<String> {
@@ -586,96 +503,5 @@ mod credential_timeout_tests {
             .to_string()
             .contains("fixture failure")
         );
-    }
-}
-
-#[cfg(test)]
-mod keychain_acl_migration_tests {
-    use super::*;
-    use crate::keychain::tests::FakeRunner;
-
-    fn config() -> Config {
-        Config::new("alice".into(), "https://mail.example.com").unwrap()
-    }
-
-    fn migrate(runner: &FakeRunner, dir: &std::path::Path) -> Result<()> {
-        migrate_after_read(runner, dir, &config(), "pw", CredentialSource::Store)
-    }
-
-    // An item created by an older, signed m2k keeps prompting for every new
-    // build until `security` itself recreates it, so the first read migrates.
-    #[test]
-    fn first_read_recreates_item_through_security_and_records_marker() {
-        let dir = tempfile::tempdir().unwrap();
-        let runner = FakeRunner::new(vec![(0, ""), (0, "")]);
-        migrate(&runner, dir.path()).unwrap();
-        assert_eq!(runner.commands(), ["delete-generic-password", "-i"]);
-        let marker = fs::read_to_string(dir.path().join(KEYCHAIN_ACL_MARKER)).unwrap();
-        assert_eq!(marker, credential_key(&config()).unwrap());
-    }
-
-    #[test]
-    fn migrated_credential_is_not_rewritten_again() {
-        let dir = tempfile::tempdir().unwrap();
-        write_acl_marker(dir.path(), &credential_key(&config()).unwrap()).unwrap();
-        let runner = FakeRunner::new(vec![]);
-        migrate(&runner, dir.path()).unwrap();
-        assert!(runner.commands().is_empty());
-    }
-
-    // M2K_PASSWORD must never be written into the keychain, even when no
-    // marker exists yet.
-    #[test]
-    fn env_password_never_reaches_the_keychain() {
-        let dir = tempfile::tempdir().unwrap();
-        let (value, source) = read_with_source(Some("from-env".into()), &config()).unwrap();
-        assert_eq!(
-            (value.as_str(), source),
-            ("from-env", CredentialSource::Env)
-        );
-        let runner = FakeRunner::new(vec![]);
-        migrate_after_read(&runner, dir.path(), &config(), &value, source).unwrap();
-        assert!(runner.commands().is_empty());
-        assert!(!dir.path().join(KEYCHAIN_ACL_MARKER).exists());
-    }
-
-    // A marker left by a different account or server must not skip migration.
-    #[test]
-    fn marker_for_another_credential_key_still_migrates() {
-        assert!(needs_acl_migration(None, "key"));
-        assert!(needs_acl_migration(Some("other"), "key"));
-        assert!(!needs_acl_migration(Some("key\n"), "key"));
-    }
-
-    #[test]
-    fn failed_delete_leaves_item_untouched_and_no_marker() {
-        let dir = tempfile::tempdir().unwrap();
-        let runner = FakeRunner::new(vec![(51, "")]);
-        let error = migrate(&runner, dir.path()).unwrap_err().to_string();
-        assert!(error.contains("項目未變更"));
-        assert_eq!(runner.commands(), ["delete-generic-password"]);
-        assert!(!dir.path().join(KEYCHAIN_ACL_MARKER).exists());
-    }
-
-    // After the delete the password lives only in memory, so one failed add
-    // must not lose it.
-    #[test]
-    fn transient_add_failure_is_retried() {
-        let dir = tempfile::tempdir().unwrap();
-        let runner = FakeRunner::new(vec![(0, ""), (51, ""), (0, "")]);
-        migrate(&runner, dir.path()).unwrap();
-        assert_eq!(runner.commands(), ["delete-generic-password", "-i", "-i"]);
-        assert!(dir.path().join(KEYCHAIN_ACL_MARKER).exists());
-    }
-
-    // Without the marker the next read retries the migration.
-    #[test]
-    fn persistent_add_failure_says_item_was_deleted() {
-        let dir = tempfile::tempdir().unwrap();
-        let runner = FakeRunner::new(vec![(0, ""), (51, ""), (51, "")]);
-        let error = migrate(&runner, dir.path()).unwrap_err().to_string();
-        assert!(error.contains("已刪除"));
-        assert!(error.contains("m2k auth login"));
-        assert!(!dir.path().join(KEYCHAIN_ACL_MARKER).exists());
     }
 }

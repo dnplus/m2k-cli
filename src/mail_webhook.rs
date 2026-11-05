@@ -261,7 +261,7 @@ pub fn run(dir: &Path, args: WatchArgs) -> Result<()> {
     let mut failures = 0;
     while !stop.load(Ordering::Relaxed) {
         let receipt = delivery.drain(&mut store, &subscription, &stop)?;
-        let password = config::password(dir, &cfg)?;
+        let password = config::password(&cfg)?;
         let cycle = (|| -> Result<_> {
             if watcher.is_none() {
                 watcher = Some(Watcher::connect(&cfg, &password, &stop)?);

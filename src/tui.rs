@@ -2078,7 +2078,7 @@ fn online_mail<T>(dir: &Path, cfg: &Config, work: impl FnOnce(&str) -> Result<T>
     if dir.join(".demo").exists() {
         bail!("展示資料不連線");
     }
-    let password = config::password(dir, cfg)?;
+    let password = config::password(cfg)?;
     work(&password)
         .map_err(|error| anyhow::anyhow!(format!("{error:#}").replace(&password, "[已隱藏]")))
 }

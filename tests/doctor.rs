@@ -315,6 +315,4 @@ fn success_and_failure_expose_checks_at_the_same_top_level_path() {
         assert!(value["data_dir"].is_string());
         assert!(value["demo"].is_boolean());
     }
-    // 舊的 `report` 別名仍在，內容與頂層一致。
-    assert_eq!(bad["report"]["checks"], bad["checks"]);
 }

@@ -25,7 +25,7 @@ cargo install --path . --locked
 
 密碼存在系統密碼庫：macOS 透過 Apple 簽章的 `/usr/bin/security` 讀寫登入鑰匙圈，Windows 用認證管理員，Linux 用 Secret Service。macOS 項目的存取權限信任的是 `security` 而不是 m2k 執行檔，所以重新編譯、`cargo install` 或下載的 release binary 都不會再跳授權視窗。安全性取捨和 `gh` 相同：同一個使用者的任何程式只要執行 `security find-generic-password -s m2k -g` 就能讀到密碼；需要更嚴格的隔離時，請改用 `M2K_PASSWORD` 由外部密碼管理工具注入。寫入時密碼經由標準輸入交給 `security`，不會出現在程序參數列。
 
-從舊版升級：舊版建立的鑰匙圈項目只信任當初的 m2k 執行檔，升級後第一次讀取時 macOS 會跳出授權視窗，可能要求輸入登入鑰匙圈密碼，請選「永遠允許」。讀到密碼後 m2k 會刪除舊項目、由 `security` 重新建立（`add-generic-password -U` 不會更換既有項目的存取權限，所以必須重建），之後就不會再問；完成的帳號記錄在資料目錄的 `keychain-acl-migrated`。重新寫入失敗會再試一次；仍失敗時 stderr 會說明舊項目已刪除，請重新執行 `m2k auth login`。`M2K_PASSWORD` 提供的密碼不會寫進鑰匙圈，`m2k doctor` 是唯讀檢查，兩者都不做這個遷移。每次呼叫 `security`（讀取、刪除、重新寫入）最多等待 15 秒，逾時會結束該 `security` 程序，不留下背景程序。若先前為 m2k 建立過「m2k local codesign」自簽憑證，現在可以自行在「鑰匙圈存取」刪除，m2k 不會替你刪。
+每次呼叫 `security`（讀取、寫入、刪除）最多等待 15 秒，逾時會結束該 `security` 程序，不留下背景程序。若先前為 m2k 建立過「m2k local codesign」自簽憑證，現在可以自行在「鑰匙圈存取」刪除，m2k 不會替你刪。
 
 `M2K_KEYCHAIN` 可指定一個鑰匙圈檔路徑，macOS 上所有 `security` 指令都改用該檔而不碰登入鑰匙圈；測試以不存在的路徑讓 m2k 視為沒有存放密碼。其他平台忽略這個變數。
 
@@ -52,7 +52,7 @@ m2k tui
 
 `auth login` 隱藏輸入密碼，檢查四種服務後存入系統密碼庫。`auth logout` 移除密碼，保留離線資料。自動化環境可提供 `M2K_PASSWORD`，程式不會把它寫進設定或 SQLite。設定與資料檔權限為 `0600`，資料目錄為 `0700`；這是本機檔案存取保護，SQLite 內容沒有另行加密。
 
-`m2k doctor`（可加 `--json`）是唯讀的驗收前檢查，一次回答「這台機器、這個帳號能不能開始正式驗收」。逐項回報 `pass`／`warn`／`fail`／`skip` 與原因（`warn` 不算失敗）：`build`（版本與 build commit）、`data_dir`（0700）、`config`（存在、有效、0600）、`site_profile`（實際生效的 profile；通用 profile 且沒有任何使用者 profile 時為 `warn` 並附遷移步驟）、`credentials`（系統密碼庫或 `M2K_PASSWORD`）、`imap`、`smtp`、`caldav`、`carddav`（登入並探索 principal／collection）、`database`（可開啟且 schema 為最新）、`sync_lock`（沒有被其他程序占用）。展示資料目錄會把所有線上與憑證檢查標為 `skip` 並註明原因。任何一項 `fail` 即以狀態 1 結束；`--json` 不論成功或失敗，都從同一個頂層路徑讀結果：`checks`、`version`、`build_commit`、`data_dir`、`demo`。失敗時另外沿用錯誤契約（`state:"error"`、`error.code:"doctor_failed"`）；舊的 `report`（內容與頂層相同）保留給既有腳本，新腳本請讀頂層。doctor 不寄信、不改旗標、不寫行事曆、不建立或遷移任何本機檔案，錯誤訊息也不會出現密碼；SMTP 只做連線與認證測試。
+`m2k doctor`（可加 `--json`）是唯讀的驗收前檢查，一次回答「這台機器、這個帳號能不能開始正式驗收」。逐項回報 `pass`／`warn`／`fail`／`skip` 與原因（`warn` 不算失敗）：`build`（版本與 build commit）、`data_dir`（0700）、`config`（存在、有效、0600）、`site_profile`（實際生效的 profile）、`credentials`（系統密碼庫或 `M2K_PASSWORD`）、`imap`、`smtp`、`caldav`、`carddav`（登入並探索 principal／collection）、`database`（可開啟且 schema 為最新）、`sync_lock`（沒有被其他程序占用）。展示資料目錄會把所有線上與憑證檢查標為 `skip` 並註明原因。任何一項 `fail` 即以狀態 1 結束；`--json` 不論成功或失敗，都從同一個頂層路徑讀結果：`checks`、`version`、`build_commit`、`data_dir`、`demo`。失敗時另外沿用錯誤契約（`state:"error"`、`error.code:"doctor_failed"`）。doctor 不寄信、不改旗標、不寫行事曆、不建立或遷移任何本機檔案，錯誤訊息也不會出現密碼；SMTP 只做連線與認證測試。
 
 若網路擋住 SMTP 587，可執行 `m2k config set --smtp-port 465`，改用 implicit TLS。
 
@@ -66,7 +66,7 @@ m2k init --username your_account --email your_account@example.com \
 
 ### Site profile
 
-站台差異（CalDAV／CardDAV 路徑、公司通訊錄根、會議室 provider、據點清單、房名解析規則、內建 fallback 會議室）放在 site profile，不寫在程式裡。`init` 與 `auth login` 可用 `--site-profile` 指定 profile 名稱或 JSON 檔路徑，存進 `config.json` 的 `site_profile`；未指定時，若伺服器符合某個 profile 的 `server` 就自動套用，否則使用只含 Mail2000 通用路徑的 `mail2000` profile，選到的名稱同樣寫進 `site_profile`。舊版建立、沒有 `site_profile` 的設定在每次執行時依伺服器自動選用。
+站台差異（CalDAV／CardDAV 路徑、公司通訊錄根、會議室 provider、據點清單、房名解析規則、內建 fallback 會議室）放在 site profile，不寫在程式裡。`init` 與 `auth login` 可用 `--site-profile` 指定 profile 名稱或 JSON 檔路徑，存進 `config.json` 的 `site_profile`；未指定時，若伺服器符合某個 profile 的 `server` 就自動套用，否則使用只含 Mail2000 通用路徑的 `mail2000` profile，選到的名稱同樣寫進 `site_profile`。
 
 程式只內建 `mail2000`（通用）與 `demo`（展示用、虛構）兩個 profile，在 `src/site/*.json`。站台專屬的 profile（含真實會議室 access 名稱）不放進程式，由使用者放在資料目錄的 `site-profiles/<name>.json`（例如 macOS 為 `~/Library/Application Support/m2k/site-profiles/`，`--data-dir` 指定時為該目錄下的 `site-profiles/`），之後以 `--site-profile <name>` 或伺服器自動選用；也可直接給任意路徑（含 `/` 或副檔名才視為路徑，單純名稱只找 `site-profiles/`）。環境變數 `M2K_SITE_PROFILE_DIR` 可改用其他目錄。使用者 profile 與內建 profile 同名時使用內建版本並顯示警告。範本見 [`examples/site-profile.example.json`](examples/site-profile.example.json)，內容全部虛構。
 
@@ -86,19 +86,6 @@ m2k init --username your_account --email your_account@example.com \
 ```
 
 除了 `name` 以外都可省略；`{domain}` 代入帳號 email 的網域。profile 有 `server` 時，`init --site-profile NAME|FILE` 可省略 `--server`。`site-profiles/` 中格式錯誤的檔案在依伺服器自動選用時會被略過，以名稱指定時才報錯。
-
-#### 從內建站台 profile 遷移
-
-舊版曾把某個站台的 profile 編進程式。升級到不內建該 profile 的版本前，先把舊檔複製到資料目錄，`config.json` 不需修改：
-
-```sh
-DATA_DIR="$HOME/Library/Application Support/m2k"   # Linux：~/.local/share/m2k；或你的 --data-dir
-mkdir -p "$DATA_DIR/site-profiles"
-git show <舊版 commit>:src/site/<name>.json > "$DATA_DIR/site-profiles/<name>.json"
-m2k --json meeting resources | head   # 確認會議室清單與升級前相同
-```
-
-`config.json` 的 `site_profile` 若是該名稱，會改從這個檔案載入；若沒有 `site_profile`、原本靠伺服器自動選用，也會依檔案中的 `server` 選到同一份 profile。檔案不存在時，以名稱指定的設定會明確報錯並指出預期路徑；靠伺服器自動選用的設定則退回通用 `mail2000` profile（沒有會議室清單）；這時 `m2k doctor` 的 `site_profile` 項目回報 `warn`，`meeting resources`／`meeting rooms` 找不到任何會議室時在 stderr 與 JSON `warnings` 附上本段步驟，`directory self` 無法判定根通訊錄時也會提示。
 
 ## 同步與循環保存
 
@@ -301,7 +288,7 @@ m2k meeting rsvp MAIL_ID --response decline --comment '那天出差'
 
 `meeting rooms --json` 的 `calendars` 列出每間房的 `source`（cache／remote／demo／unknown）、`fetched_at` 與 coverage 起迄。加 `--refresh` 同時略過會議室目錄與行事曆快取，重新讀取並更新快取。會議室目錄與已忙碌的精確時段可沿用 10 分鐘內且涵蓋查詢範圍的快取；可能有空的房間及 `--minutes` 空檔搜尋每次重新查詢，避免其他人新增預約後仍顯示有空。重新查詢失敗顯示未知，不以舊快取宣告有空。訂房的 live recheck 仍每次執行。
 
-`meeting book --dry-run` 會即時檢查個人／房間行事曆，因此仍需認證，但不寫入行事曆。系統密碼庫讀取最多等待 15 秒；macOS 授權逾時時（通常是升級後第一次讀取舊項目），m2k 會結束 `security` 程序；請重新執行並在授權視窗允許 `security` 存取（可能需要輸入登入密碼），或重新執行 `m2k auth login`。DAV 每次 HTTP 請求有 20 秒逾時；多個 discovery／查詢請求的總時間可能更長。
+`meeting book --dry-run` 會即時檢查個人／房間行事曆，因此仍需認證，但不寫入行事曆。系統密碼庫讀取最多等待 15 秒；macOS 授權逾時時，m2k 會結束 `security` 程序；請重新執行並在授權視窗允許 `security` 存取（可能需要輸入登入密碼），或重新執行 `m2k auth login`。DAV 每次 HTTP 請求有 20 秒逾時；多個 discovery／查詢請求的總時間可能更長。
 
 DAV collection 身分比對接受路徑中的 `%40`／`@`、安全字元的 percent-encoding 與結尾斜線差異，舊資料庫帳號資訊也可沿用。密碼庫項目識別仍維持原有規則；若改過設定 URL 而找不到密碼項目，請重新執行 `m2k auth login`。
 

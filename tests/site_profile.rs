@@ -84,7 +84,7 @@ fn saved_config(data_dir: &Path) -> Value {
     serde_json::from_slice(&std::fs::read(data_dir.join("config.json")).unwrap()).unwrap()
 }
 
-/// A config.json as versions before `init` recorded the profile wrote it.
+/// A config.json written with a fixed `site_profile` name.
 fn write_legacy_config(data_dir: &Path, site_profile: Option<&str>) {
     let mut config = serde_json::json!({
         "username": "alice",
@@ -112,12 +112,10 @@ fn write_legacy_config(data_dir: &Path, site_profile: Option<&str>) {
     }
 }
 
-// Site-specific profiles (with real room access names) are not compiled in.
-// An existing install keeps working once its profile file is copied to
-// `<data-dir>/site-profiles/<name>.json`: configs that name the profile and
-// configs that relied on server auto-selection both resolve to it unchanged.
+// Site-specific profiles (with real room access names) are not compiled in:
+// a profile file in `<data-dir>/site-profiles/<name>.json` is selected by name.
 #[test]
-fn user_profile_in_data_dir_keeps_existing_configs_working() {
+fn user_profile_in_data_dir_is_selected_by_name() {
     let example = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/examples/site-profile.example.json"
@@ -148,14 +146,6 @@ fn user_profile_in_data_dir_keeps_existing_configs_working() {
         shown["site_profile"], "example",
         "the stored name is kept, not rewritten to a path"
     );
-
-    // Configs from older versions have no site_profile: auto-selected by
-    // server from the user dir.
-    let auto = TempDir::new().unwrap();
-    install_user_profile(auto.path(), "example");
-    write_legacy_config(auto.path(), None);
-    std::fs::write(auto.path().join(".demo"), "offline profile test\n").unwrap();
-    assert_eq!(resource_names(auto.path(), &[]), all);
 
     // New inits record what auto-selection picked, so the choice is visible
     // and no longer depends on the server name later.
@@ -200,8 +190,7 @@ fn missing_user_profile_names_the_expected_location() {
     assert!(text.contains("site-profiles"), "{text}");
     assert!(!dir.path().join("config.json").exists());
 
-    // An upgraded install whose profile file was not copied yet must not
-    // silently list zero rooms.
+    // A named profile whose file is gone must not silently list zero rooms.
     install_user_profile(dir.path(), "gone");
     m2k(dir.path())
         .args(["init", "--username", "alice", "--site-profile", "gone"])
@@ -391,54 +380,12 @@ fn doctor_report(data_dir: &Path) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-// The upgrade trap: a legacy config with no site_profile and no profile file
-// falls back to the generic profile. That must be visible in doctor and in
-// room listings instead of an empty, successful answer.
+// A configured user profile is reported by doctor as the effective profile.
 #[test]
-fn legacy_config_without_profile_file_warns_with_migration_steps() {
+fn doctor_reports_the_configured_profile_as_pass() {
     let dir = TempDir::new().unwrap();
-    write_legacy_config(dir.path(), None);
-    std::fs::write(dir.path().join(".demo"), "offline profile test\n").unwrap();
-
-    let output = m2k(dir.path())
-        .args(["meeting", "resources"])
-        .assert()
-        .success()
-        .get_output()
-        .clone();
-    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["resources"].as_array().unwrap().len(), 0);
-    let warning = value["warnings"][0].as_str().unwrap();
-    assert!(warning.contains("site-profiles"), "{warning}");
-    assert!(warning.contains("從內建站台 profile 遷移"), "{warning}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("警告：") && stderr.contains("site-profiles"),
-        "{stderr}"
-    );
-
-    let report = doctor_report(dir.path());
-    let check = report["checks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|check| check["name"] == "site_profile")
-        .unwrap();
-    assert_eq!(check["status"], "warn");
-    assert!(check["detail"].as_str().unwrap().contains("site-profiles"));
-
-    // Once the profile file is in place both warnings disappear.
     install_user_profile(dir.path(), "example");
-    let value: Value = serde_json::from_slice(
-        &m2k(dir.path())
-            .args(["meeting", "resources"])
-            .assert()
-            .success()
-            .get_output()
-            .stdout,
-    )
-    .unwrap();
-    assert!(value.get("warnings").is_none(), "{value}");
+    write_legacy_config(dir.path(), Some("example"));
     let report = doctor_report(dir.path());
     let check = report["checks"]
         .as_array()
