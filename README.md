@@ -9,8 +9,8 @@ Mail2000 的 Rust 原生 CLI 與 TUI。參考既有 Mail2000 連接器的工作�
 從 [Releases](https://github.com/dnplus/m2k-cli/releases) 下載對應平台的壓縮檔（Linux x86_64、macOS Apple Silicon／Intel、Windows x86_64），核對同名 `.sha256` 後解壓，把 `m2k`（Windows 為 `m2k.exe`）放到 PATH 裡：
 
 ```sh
-shasum -a 256 -c m2k-v0.4.1-aarch64-apple-darwin.tar.gz.sha256   # Linux 可用 sha256sum -c
-tar -xzf m2k-v0.4.1-aarch64-apple-darwin.tar.gz
+shasum -a 256 -c m2k-v0.5.0-aarch64-apple-darwin.tar.gz.sha256   # Linux 可用 sha256sum -c
+tar -xzf m2k-v0.5.0-aarch64-apple-darwin.tar.gz
 ```
 
 Windows 用 PowerShell 的 `Get-FileHash <檔名> -Algorithm SHA256` 比對。Linux 版在 Ubuntu 22.04 建置，執行時需要 `libdbus-1-3` 與 `libssl3`（大多數桌面發行版已內建）。macOS 版沒有經過 Apple 公證，用瀏覽器下載時若被 Gatekeeper 擋下，對解壓後的執行檔執行 `xattr -d com.apple.quarantine m2k-*/m2k` 後再開；用 `curl` 下載則不會被標記。推送 `vX.Y.Z` tag 時由 `.github/workflows/release.yml` 自動建置並發佈，tag 必須和 `Cargo.toml` 的版本一致。
