@@ -1,4 +1,7 @@
-use crate::mail_reply::{self, ReplyHeaders};
+use crate::{
+    mail_reply::{self, ReplyHeaders},
+    model::OutgoingMail,
+};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 
@@ -10,6 +13,41 @@ pub enum Phase {
     External,
     Confirm,
     Sending,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compose {
+    Reply,
+    Forward,
+    New,
+}
+
+impl Compose {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Reply => "回覆",
+            Self::Forward => "轉寄",
+            Self::New => "新郵件",
+        }
+    }
+
+    pub fn draft_prefix(self) -> &'static str {
+        match self {
+            Self::Reply => "reply",
+            Self::Forward => "forward",
+            Self::New => "mail",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum Ready {
+    Reply(ReplyHeaders, String),
+    Forward {
+        to: Vec<String>,
+        introduction: String,
+    },
+    New(OutgoingMail),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -25,6 +63,7 @@ pub enum Action {
 }
 
 pub struct ReplyFlow {
+    pub compose: Compose,
     pub mail_id: String,
     pub text: String,
     pub phase: Phase,
@@ -35,8 +74,15 @@ pub struct ReplyFlow {
 }
 
 impl ReplyFlow {
-    pub fn new(mail_id: String, text: String, external: bool, demo: bool) -> Self {
+    pub fn compose(
+        compose: Compose,
+        mail_id: String,
+        text: String,
+        external: bool,
+        demo: bool,
+    ) -> Self {
         Self {
+            compose,
             mail_id,
             text,
             phase: if external {
@@ -52,8 +98,15 @@ impl ReplyFlow {
     }
 
     /// 目前文字能否寄出；不能時回傳原因。
-    pub fn check(&self) -> Result<(ReplyHeaders, String), String> {
-        mail_reply::parse_draft(&self.text).map_err(|error| format!("{error:#}"))
+    pub fn check(&self) -> Result<Ready, String> {
+        match self.compose {
+            Compose::Reply => mail_reply::parse_draft(&self.text)
+                .map(|(headers, body)| Ready::Reply(headers, body)),
+            Compose::Forward => mail_reply::parse_forward_draft(&self.text)
+                .map(|(to, introduction)| Ready::Forward { to, introduction }),
+            Compose::New => mail_reply::parse_new_draft(&self.text).map(Ready::New),
+        }
+        .map_err(|error| format!("{error:#}"))
     }
 
     pub fn key(&mut self, key: KeyEvent) -> Action {
@@ -147,7 +200,8 @@ mod tests {
     }
 
     fn ready(external: bool, demo: bool) -> ReplyFlow {
-        let mut flow = ReplyFlow::new(
+        let mut flow = ReplyFlow::compose(
+            Compose::Reply,
             "m1".into(),
             "To: a@example.test\nSubject: Re: x\n\n好的\n\n> 原文\n".into(),
             external,
@@ -159,7 +213,7 @@ mod tests {
 
     #[test]
     fn builtin_editor_collects_text_and_ctrl_d_moves_to_confirm_not_send() {
-        let mut flow = ReplyFlow::new("m1".into(), String::new(), false, false);
+        let mut flow = ReplyFlow::compose(Compose::Reply, "m1".into(), String::new(), false, false);
         assert_eq!(flow.phase, Phase::Editing);
         for c in "hi".chars() {
             press(&mut flow, KeyCode::Char(c));
@@ -225,7 +279,7 @@ mod tests {
 
     #[test]
     fn esc_in_builtin_editor_and_confirm_saves_instead_of_discarding() {
-        let mut flow = ReplyFlow::new("m1".into(), "x".into(), false, false);
+        let mut flow = ReplyFlow::compose(Compose::Reply, "m1".into(), "x".into(), false, false);
         assert_eq!(press(&mut flow, KeyCode::Esc), Action::Save { close: true });
         let mut flow = ready(false, false);
         assert_eq!(press(&mut flow, KeyCode::Esc), Action::Save { close: true });
