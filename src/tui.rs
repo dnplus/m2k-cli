@@ -782,6 +782,46 @@ impl App {
         self.mail_prompt = Some(mail_prompt::Prompt::attachment(item.id.clone(), names));
     }
 
+    fn start_rsvp(&mut self) {
+        use crate::meeting_rsvp::{build_rsvp_reply, invite_from_mail, RsvpResponse};
+        if self.pending_mail.is_some() {
+            self.status = "上一個郵件操作仍在進行，請等結果".into();
+            return;
+        }
+        let Some(item) = self.opened_mail() else {
+            self.status = "先按 Enter 開啟郵件、等正文載入後再按 i 回覆邀請".into();
+            return;
+        };
+        let Ok(invite) = mail::raw_bytes(item).and_then(|raw| invite_from_mail(&raw)) else {
+            self.status = "這封郵件沒有會議邀請（text/calendar），沒有可回覆的內容".into();
+            return;
+        };
+        let Some(cfg) = &self.config else {
+            self.status = "尚未設定帳號 · 請執行 m2k init --username 你的帳號".into();
+            return;
+        };
+        match build_rsvp_reply(
+            &invite.ics,
+            invite.content_type_method.as_deref(),
+            &cfg.email,
+            RsvpResponse::Accept,
+            None,
+            Utc::now(),
+        ) {
+            Ok(reply) => {
+                self.mail_prompt = Some(mail_prompt::Prompt::Rsvp {
+                    id: item.id.clone(),
+                    summary: reply.summary,
+                    organizer: reply.organizer,
+                    response: RsvpResponse::Accept,
+                    comment: String::new(),
+                    confirm: false,
+                });
+            }
+            Err(error) => self.status = format!("無法回覆邀請：{error:#}"),
+        }
+    }
+
     fn mail_prompt_key(&mut self, key: KeyEvent) {
         let Some(prompt) = self.mail_prompt.as_mut() else {
             return;
@@ -827,6 +867,28 @@ impl App {
                     "刪除",
                     format!("已刪除「{}」", item.title),
                     move || crate::mail_action::delete(&dir, &id).map(|()| None),
+                );
+            }
+            mail_prompt::Action::Rsvp { response, comment } => {
+                let Some(mail_prompt::Prompt::Rsvp { id, organizer, .. }) = self.mail_prompt.take()
+                else {
+                    return;
+                };
+                let Some(item) = self.rows.iter().find(|row| row.id == id).cloned() else {
+                    return;
+                };
+                let (dir, kept) = (self.dir.clone(), item.clone());
+                self.spawn_mail(
+                    &item,
+                    "回覆邀請",
+                    format!(
+                        "已寄送 METHOD:REPLY（{}）給 {organizer}；未修改本機或伺服器行事曆",
+                        response.partstat()
+                    ),
+                    move || {
+                        crate::meeting_rsvp::respond(&dir, &id, response, comment.as_deref(), false)
+                            .map(|_| Some(kept))
+                    },
                 );
             }
             mail_prompt::Action::Save { index, path } => {
@@ -1499,6 +1561,7 @@ impl App {
             KeyCode::Char('m') if self.tab == 0 => self.start_move(),
             KeyCode::Char('x') if self.tab == 0 => self.start_delete(),
             KeyCode::Char('a') if self.tab == 0 => self.start_attachment(),
+            KeyCode::Char('i') if self.tab == 0 => self.start_rsvp(),
             KeyCode::Char('r') if self.tab == 2 && key.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.start_directory_sync()
             }
@@ -1872,7 +1935,7 @@ impl App {
                 .into()
         } else {
             if self.detail {
-                "Esc 返回 · R 回覆 · F 轉寄 · a 存附件 · s 已讀 · f 星號 · m 移動 · x 刪除 · ? 說明"
+                "Esc 返回 · R 回覆 · F 轉寄 · a 存附件 · i 回覆邀請 · s 已讀 · f 星號 · m 移動 · x 刪除 · ? 說明"
                     .into()
             } else {
                 "q 離開 · 1/2/3/4 頁籤 · Enter 詳情 · / 搜尋 · r 更新 · c 寫信 · s/f 已讀/星號 · m 移動 · x 刪除 · ? 說明"
@@ -2238,13 +2301,25 @@ impl App {
             } else {
                 "按 Enter 或點擊列表載入正文。"
             };
+            let invite = (item.kind == Kind::Mail && self.detail && !item.raw.is_empty())
+                .then(|| mail::raw_bytes(item).ok())
+                .flatten()
+                .and_then(|raw| {
+                    crate::meeting_rsvp::invite_summary(
+                        &raw,
+                        self.config.as_ref().map(|cfg| cfg.email.as_str()),
+                    )
+                    .ok()
+                })
+                .map(|invite| format_invite(&invite))
+                .unwrap_or_default();
             format!(
                 "{}
 {}
 {}
 資料夾：{}
 {}{}
-{}",
+{invite}{}",
                 item.title,
                 item.subtitle,
                 item.date.as_deref().map(display_time).unwrap_or_default(),
@@ -2293,7 +2368,7 @@ impl App {
 
     fn draw_help(&self, frame: &mut Frame, area: Rect) {
         let width = area.width.min(80);
-        let height = area.height.min(if self.tab == 1 { 20 } else { 25 });
+        let height = area.height.min(if self.tab == 1 { 20 } else { 26 });
         let popup = Rect::new(
             area.x + (area.width - width) / 2,
             area.y + (area.height - height) / 2,
@@ -2306,7 +2381,7 @@ impl App {
                 .block(block(" 行事曆操作說明 ")).wrap(Wrap { trim: false }), popup);
             return;
         }
-        frame.render_widget(Paragraph::new("1 / 2 / 3 / 4、Tab     郵件、行事曆、聯絡人、找會議室\n↑ / ↓、j / k           選取資料 / 捲動詳情\n← / →、h / l           切換資料夾\nEnter / Esc            開啟詳情 / 返回列表\n郵件詳情內 R          回覆草稿（$EDITOR；確認後才寄出）\n郵件詳情內 F / 郵件 c  轉寄／寫新信（同回覆草稿與確認畫面）\n郵件 s / f             切換已讀／星號（立即寫入伺服器）\n郵件 m / x             移動／刪除選取郵件（確認畫面 y 才執行）\n郵件詳情內 a           存附件（預設 ~/Downloads，不覆寫）\n/ 或點搜尋框           搜尋中文或英文\nEnter 或停止輸入       合併本機 + IMAP 搜尋（離線保留本機結果）\n[ / ]、PageUp/Down     前後頁 / 捲動詳情\ng / G、Home / End      第一頁 / 最後一頁\nr                      郵件增量；行事曆 ±30 天；聯絡人讀本機\n聯絡人 Shift-R         手動背景同步全公司目錄\n滑鼠                   點頁籤、資料夾、列、搜尋框、上一頁/下一頁\n滾輪                   捲動游標所在資料夾、列表或詳情\n會議室時間             明天 14:00 / 下週一 下午兩點（台北；RFC3339 亦可）\n會議室預設             6 人 · 120 分 · 09:30-17:30\n結束留空               從開始找當日空檔；清空分鐘需填結束\n會議室 Enter           查詢；分鐘結果再 Enter 於空檔內挑實際起迄\n? / Esc                關閉說明\nq / Ctrl-C             離開（表單內 Ctrl-C）").block(block(" 操作說明 ")).wrap(Wrap{trim:false}),popup);
+        frame.render_widget(Paragraph::new("1 / 2 / 3 / 4、Tab     郵件、行事曆、聯絡人、找會議室\n↑ / ↓、j / k           選取資料 / 捲動詳情\n← / →、h / l           切換資料夾\nEnter / Esc            開啟詳情 / 返回列表\n郵件詳情內 R          回覆草稿（$EDITOR；確認後才寄出）\n郵件詳情內 F / 郵件 c  轉寄／寫新信（同回覆草稿與確認畫面）\n郵件 s / f             切換已讀／星號（立即寫入伺服器）\n郵件 m / x             移動／刪除選取郵件（確認畫面 y 才執行）\n郵件詳情內 a           存附件（預設 ~/Downloads，不覆寫）\n郵件詳情內 i           回覆會議邀請：接受／拒絕／暫定（確認畫面 y 才寄出）\n/ 或點搜尋框           搜尋中文或英文\nEnter 或停止輸入       合併本機 + IMAP 搜尋（離線保留本機結果）\n[ / ]、PageUp/Down     前後頁 / 捲動詳情\ng / G、Home / End      第一頁 / 最後一頁\nr                      郵件增量；行事曆 ±30 天；聯絡人讀本機\n聯絡人 Shift-R         手動背景同步全公司目錄\n滑鼠                   點頁籤、資料夾、列、搜尋框、上一頁/下一頁\n滾輪                   捲動游標所在資料夾、列表或詳情\n會議室時間             明天 14:00 / 下週一 下午兩點（台北；RFC3339 亦可）\n會議室預設             6 人 · 120 分 · 09:30-17:30\n結束留空               從開始找當日空檔；清空分鐘需填結束\n會議室 Enter           查詢；分鐘結果再 Enter 於空檔內挑實際起迄\n? / Esc                關閉說明\nq / Ctrl-C             離開（表單內 Ctrl-C）").block(block(" 操作說明 ")).wrap(Wrap{trim:false}),popup);
     }
 }
 
@@ -2617,6 +2692,43 @@ fn draw_reply(frame: &mut Frame, area: Rect, flow: &reply::ReplyFlow, syncing: b
     );
 }
 
+fn format_invite(invite: &crate::meeting_rsvp::InviteSummary) -> String {
+    let taipei = |value: &Option<String>| {
+        value
+            .as_deref()
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            .map(|date| date.with_timezone(&chrono_tz::Asia::Taipei))
+    };
+    let (start, end) = (taipei(&invite.start), taipei(&invite.end));
+    let start_text = start.map_or_else(
+        || "（未提供）".into(),
+        |date| date.format("%Y-%m-%d %H:%M").to_string(),
+    );
+    let end_text = match (start, end) {
+        (Some(start), Some(end)) if start.date_naive() == end.date_naive() => {
+            end.format("%H:%M").to_string()
+        }
+        (_, Some(end)) => end.format("%Y-%m-%d %H:%M").to_string(),
+        (_, None) => "（未提供）".into(),
+    };
+    format!(
+        "── 會議邀請 ──\n主題：{}\n主辦人：{}\n時間：{start_text} – {end_text}（台北）\n地點：{}\n我的回覆：{}\n按 i 回覆邀請（接受／拒絕／暫定）\n\n",
+        invite.summary,
+        invite.organizer.as_deref().unwrap_or("（未提供）"),
+        invite.location.as_deref().unwrap_or("（未提供）"),
+        invite.partstat.as_deref().unwrap_or("未知"),
+    )
+}
+
+fn rsvp_name(response: crate::meeting_rsvp::RsvpResponse) -> &'static str {
+    use crate::meeting_rsvp::RsvpResponse;
+    match response {
+        RsvpResponse::Accept => "接受",
+        RsvpResponse::Decline => "拒絕",
+        RsvpResponse::Tentative => "暫定",
+    }
+}
+
 fn draw_mail_prompt(frame: &mut Frame, area: Rect, prompt: &mail_prompt::Prompt) {
     use mail_prompt::Prompt;
     let width = area.width.min(76);
@@ -2663,6 +2775,43 @@ fn draw_mail_prompt(frame: &mut Frame, area: Rect, prompt: &mail_prompt::Prompt)
             format!(
                 "刪除「{}」（{}）？\n\n會移到伺服器的垃圾桶資料夾（Trash 等）；找不到垃圾桶時直接永久刪除。\n\ny 確認刪除 · Esc 取消",
                 target.subject, target.folder
+            ),
+        ),
+        Prompt::Rsvp {
+            summary,
+            organizer,
+            response,
+            comment,
+            confirm: false,
+            ..
+        } => (
+            " 回覆會議邀請 ",
+            format!(
+                "「{summary}」\n主辦人：{organizer}\n\n回覆：{}\n附註（COMMENT，可留空）：{comment}_\n\n←→ / Tab 切換回覆 · 輸入附註 · Enter 下一步 · Esc 取消",
+                mail_prompt::RSVP_RESPONSES
+                    .iter()
+                    .map(|option| if option == response {
+                        format!("[{}]", rsvp_name(*option))
+                    } else {
+                        format!(" {} ", rsvp_name(*option))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+        ),
+        Prompt::Rsvp {
+            summary,
+            organizer,
+            response,
+            comment,
+            ..
+        } => (
+            " 確認回覆邀請 ",
+            format!(
+                "會議：「{summary}」\n寄給主辦人：{organizer}\n回覆：{}（PARTSTAT={}）\n附註：{}\n\n只寄出一封 METHOD:REPLY，不修改本機或伺服器行事曆；不會重試。\n\ny 寄出 · Esc 取消",
+                rsvp_name(*response),
+                response.partstat(),
+                if comment.trim().is_empty() { "（無）" } else { comment.trim() }
             ),
         ),
         Prompt::Attachment {
@@ -4747,6 +4896,192 @@ mod tests {
         };
         assert!(notice.as_deref().unwrap().contains("不覆寫"), "{notice:?}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "使用者自己的檔案");
+    }
+
+    fn demo_invite_app() -> (tempfile::TempDir, App) {
+        let temp = tempdir().unwrap();
+        crate::demo::seed_without_rooms(temp.path()).unwrap();
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:plan-7@example.test\r\nSEQUENCE:0\r\nDTSTAMP:20261018T000000Z\r\nDTSTART;TZID=Asia/Taipei:20261021T140000\r\nDTEND;TZID=Asia/Taipei:20261021T150000\r\nSUMMARY:季度規劃\r\nLOCATION:北區範例會議室\r\nORGANIZER;CN=Carol:mailto:carol@example.test\r\nATTENDEE;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:demo@example.test\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let raw = format!(
+            "From: carol@example.test\r\nTo: demo@example.test\r\nSubject: plan\r\nMessage-ID: <plan-7@example.test>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n請參加\r\n--b\r\nContent-Type: text/calendar; method=REQUEST; charset=utf-8\r\n\r\n{ics}--b--\r\n"
+        );
+        Store::open(temp.path())
+            .unwrap()
+            .upsert(&Item {
+                id: "demo-invite".into(),
+                kind: Kind::Mail,
+                collection: "INBOX".into(),
+                remote_id: "9".into(),
+                etag: None,
+                uid_validity: Some(1),
+                title: "季度規劃邀請".into(),
+                subtitle: "carol@example.test".into(),
+                date: None,
+                end_date: None,
+                text: "請參加".into(),
+                raw,
+                flags: vec![],
+                emails: vec![],
+                phones: vec![],
+                attachments: vec![],
+            })
+            .unwrap();
+        let mut app = App::new(temp.path()).unwrap();
+        select_id(&mut app, "demo-invite");
+        app.open_detail().unwrap();
+        (temp, app)
+    }
+
+    #[test]
+    fn invite_mail_shows_its_summary_and_rsvp_confirm_names_meeting_organizer_and_answer() {
+        let (_temp, mut app) = demo_invite_app();
+        let detail = rendered_text(&mut app, 200, 40, true);
+        for shown in [
+            "會議邀請",
+            "主題：季度規劃",
+            "主辦人：carol@example.test",
+            "時間：2026-10-21 14:00 – 15:00（台北）",
+            "地點：北區範例會議室",
+            "我的回覆：NEEDS-ACTION",
+            "按 i 回覆邀請",
+        ] {
+            assert!(detail.contains(shown), "missing {shown}:\n{detail}");
+        }
+
+        type_keys(&mut app, &[KeyCode::Char('i')]);
+        let screen = rendered_text(&mut app, 120, 32, false);
+        assert!(
+            screen.contains("回覆會議邀請") && screen.contains("[接受]"),
+            "{screen}"
+        );
+        type_keys(&mut app, &[KeyCode::Right]);
+        type_text(&mut app, "出差");
+        type_keys(&mut app, &[KeyCode::Enter]);
+        let screen = rendered_text(&mut app, 120, 32, false);
+        for shown in [
+            "確認回覆邀請",
+            "「季度規劃」",
+            "寄給主辦人：carol@example.test",
+            "拒絕（PARTSTAT=DECLINED）",
+            "附註：出差",
+            "y 寄出",
+        ] {
+            assert!(screen.contains(shown), "missing {shown}:\n{screen}");
+        }
+        type_keys(&mut app, &[KeyCode::Esc]);
+        assert!(app.mail_prompt.is_none() && app.pending_mail.is_none());
+        assert!(app.status.contains("已取消，沒有變更"), "{}", app.status);
+        assert!(app.detail, "Esc 只關確認畫面，不離開詳情");
+    }
+
+    #[test]
+    fn demo_refuses_the_rsvp_send_with_the_cli_reason_and_plain_mail_has_no_rsvp() {
+        let (_temp, mut app) = demo_invite_app();
+        type_keys(
+            &mut app,
+            &[KeyCode::Char('i'), KeyCode::Enter, KeyCode::Char('y')],
+        );
+        settle_mail(&mut app);
+        assert!(
+            app.status.contains("回覆邀請失敗：展示資料不提供實際寄信"),
+            "{}",
+            app.status
+        );
+
+        app.close_detail();
+        select_id(&mut app, "demo-mail-2");
+        app.open_detail().unwrap();
+        assert!(!rendered_text(&mut app, 200, 40, true).contains("會議邀請"));
+        type_keys(&mut app, &[KeyCode::Char('i')]);
+        assert!(app.mail_prompt.is_none() && app.pending_mail.is_none());
+        assert!(app.status.contains("沒有會議邀請"), "{}", app.status);
+    }
+
+    #[test]
+    fn rsvp_against_fixture_sends_one_reply_with_the_chosen_partstat() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        const PASSWORD: &str = "isolated-fixture-password";
+        let root = tempdir().unwrap();
+        let info = fixture::start(fixture::Options {
+            data_dir: root.path().join("fixture"),
+            user: "fixture@example.test".into(),
+            password: PASSWORD.into(),
+            imap_port: 0,
+            smtp_port: 0,
+            http_port: 0,
+            sync_collection: false,
+        })
+        .unwrap();
+        std::env::set_var("M2K_PASSWORD", PASSWORD);
+        std::env::set_var("M2K_TEST_ROOT_CERT", &info.ca_cert);
+        std::env::set_var("M2K_KEYCHAIN", "/nonexistent/m2k-test.keychain-db");
+        let dir = root.path().join("client");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = Config::with_site_profile(info.user.clone(), &info.server, None).unwrap();
+        cfg.imap_port = info.imap_port;
+        cfg.smtp_port = info.smtp_port;
+        config::save(&dir, &cfg).unwrap();
+        Store::open(&dir).unwrap().ensure_account(&cfg).unwrap();
+        sync::run(&dir, &[Kind::Mail]).unwrap();
+        let mut app = App::new(&dir).unwrap();
+        let index = app
+            .rows
+            .iter()
+            .position(|row| row.title == "季度回顧會議")
+            .expect("fixture invite");
+        app.table.select(Some(index));
+        app.open_detail().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while app.opened_mail().is_none() {
+            assert!(Instant::now() < deadline, "body did not load");
+            app.poll_background().unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let detail = rendered_text(&mut app, 200, 40, true);
+        assert!(detail.contains("我的回覆：NEEDS-ACTION"), "{detail}");
+
+        type_keys(
+            &mut app,
+            &[KeyCode::Char('i'), KeyCode::Left, KeyCode::Enter],
+        );
+        assert!(
+            fixture_events(&info, "smtp.message").is_empty(),
+            "nothing before y"
+        );
+        type_keys(&mut app, &[KeyCode::Char('y')]);
+        assert!(app.status.starts_with("正在回覆邀請"), "{}", app.status);
+        let quit = app
+            .key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert!(!quit, "Ctrl-C 等寄送結果");
+        settle_mail(&mut app);
+        assert!(
+            app.status
+                .contains("已寄送 METHOD:REPLY（TENTATIVE）給 carol@example.test"),
+            "{}",
+            app.status
+        );
+        assert!(app.detail, "回覆後仍停在詳情");
+        let sent = fixture_events(&info, "smtp.message");
+        assert_eq!(sent.len(), 1, "exactly one REPLY: {sent:?}");
+        assert_eq!(sent[0]["to"], serde_json::json!(["carol@example.test"]));
+        let eml = std::fs::read(info.data_dir.join(sent[0]["file"].as_str().unwrap())).unwrap();
+        let ics = crate::meeting_rsvp::invite_from_mail(&eml)
+            .unwrap()
+            .ics
+            .replace("\r\n ", "");
+        assert!(ics.lines().any(|line| line == "METHOD:REPLY"), "{ics}");
+        let attendees = ics
+            .lines()
+            .filter(|line| line.starts_with("ATTENDEE"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            attendees,
+            vec!["ATTENDEE;PARTSTAT=TENTATIVE:mailto:fixture@example.test"]
+        );
+        for name in ["M2K_PASSWORD", "M2K_TEST_ROOT_CERT", "M2K_KEYCHAIN"] {
+            std::env::remove_var(name);
+        }
     }
 
     #[test]

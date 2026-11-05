@@ -52,7 +52,7 @@ impl RsvpResponse {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Self::Accept => "已接受",
             Self::Decline => "已拒絕",
@@ -85,29 +85,77 @@ pub struct RsvpReply {
 }
 
 #[derive(Debug, Serialize)]
-struct RsvpOutput {
-    id: String,
-    response: RsvpResponse,
-    to: String,
-    subject: String,
-    dry_run: bool,
-    sent: bool,
-    message_id: Option<String>,
-    calendar_updated: bool,
+pub struct RsvpOutput {
+    pub id: String,
+    pub response: RsvpResponse,
+    pub to: String,
+    pub subject: String,
+    pub dry_run: bool,
+    pub sent: bool,
+    pub message_id: Option<String>,
+    pub calendar_updated: bool,
     #[serde(flatten)]
-    reply: RsvpReply,
+    pub reply: RsvpReply,
+}
+
+/// What the TUI shows above an invitation mail's body. `partstat` is the
+/// current answer of `self_email` in the request, when it is listed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InviteSummary {
+    pub summary: String,
+    pub organizer: Option<String>,
+    pub start: Option<String>,
+    pub end: Option<String>,
+    pub location: Option<String>,
+    pub partstat: Option<String>,
 }
 
 pub fn execute(data_dir: &Path, args: RsvpArgs, json: bool) -> Result<()> {
+    let output = respond(
+        data_dir,
+        &args.id,
+        args.response,
+        args.comment.as_deref(),
+        args.dry_run,
+    )?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if output.dry_run {
+        println!("預覽 METHOD:REPLY（{}），未寄送。", output.reply.partstat);
+        println!("收件者：{}", output.to);
+        println!("主旨：{}", output.subject);
+        println!();
+        print!("{}", output.reply.ics);
+    } else {
+        println!(
+            "已寄送 METHOD:REPLY（{}）給 {}；未修改本機或伺服器行事曆。",
+            output.reply.partstat, output.to
+        );
+        if let Some(id) = &output.message_id {
+            println!("Message-ID：{id}");
+        }
+    }
+    Ok(())
+}
+
+/// `meeting rsvp` without the printing, shared by the CLI and the TUI. The
+/// send is attempted once; it never touches a calendar.
+pub fn respond(
+    data_dir: &Path,
+    id: &str,
+    response: RsvpResponse,
+    comment: Option<&str>,
+    dry_run: bool,
+) -> Result<RsvpOutput> {
     let demo = data_dir.join(".demo").exists();
-    if demo && !args.dry_run {
+    if demo && !dry_run {
         bail!("展示資料不提供實際寄信；可加上 --dry-run 預覽回覆");
     }
-    let _lock = (!args.dry_run).then(|| sync::lock(data_dir)).transpose()?;
+    let _lock = (!dry_run).then(|| sync::lock(data_dir)).transpose()?;
     let config = config::load(data_dir)?;
     let mut store = Store::open(data_dir)?;
     store.ensure_account(&config)?;
-    let mut item = store.get(&args.id)?;
+    let mut item = store.get(id)?;
     if item.kind != Kind::Mail {
         bail!("資料類型不符：{}", item.kind);
     }
@@ -127,13 +175,13 @@ pub fn execute(data_dir: &Path, args: RsvpArgs, json: bool) -> Result<()> {
         &invite.ics,
         invite.content_type_method.as_deref(),
         &config.email,
-        args.response,
-        args.comment.as_deref(),
+        response,
+        comment,
         Utc::now(),
     )?;
-    let subject = format!("{}：{}", args.response.label(), reply.summary);
+    let subject = format!("{}：{}", response.label(), reply.summary);
     let mut message_id = None;
-    if !args.dry_run {
+    if !dry_run {
         let password = match password {
             Some(password) => password,
             None => config::password(&config)?,
@@ -144,10 +192,10 @@ pub fn execute(data_dir: &Path, args: RsvpArgs, json: bool) -> Result<()> {
         let mut body = format!(
             "{} {}會議邀請：{}\n",
             reply.attendee,
-            args.response.label(),
+            response.label(),
             reply.summary
         );
-        if let Some(comment) = args.comment.as_deref().map(str::trim) {
+        if let Some(comment) = comment.map(str::trim) {
             if !comment.is_empty() {
                 body.push('\n');
                 body.push_str(comment);
@@ -166,35 +214,60 @@ pub fn execute(data_dir: &Path, args: RsvpArgs, json: bool) -> Result<()> {
             },
         )?);
     }
-    let output = RsvpOutput {
-        id: args.id,
-        response: args.response,
+    Ok(RsvpOutput {
+        id: id.to_owned(),
+        response,
         to: reply.organizer.clone(),
         subject,
-        dry_run: args.dry_run,
+        dry_run,
         sent: message_id.is_some(),
         message_id,
         calendar_updated: false,
         reply,
+    })
+}
+
+/// Reads the first VEVENT of the mail's invitation; fails when the mail has
+/// no calendar part. Unlike `build_rsvp_reply` it does not judge whether the
+/// invitation can be answered.
+pub fn invite_summary(raw: &[u8], self_email: Option<&str>) -> Result<InviteSummary> {
+    let invite = invite_from_mail(raw)?;
+    let parsed = parse_calendar(&invite.ics)?;
+    let event = parsed
+        .events
+        .first()
+        .ok_or_else(|| anyhow!("會議邀請缺少 VEVENT"))?;
+    let self_email = self_email.map(str::to_lowercase);
+    let time = |name: &str| {
+        event
+            .first(name)
+            .and_then(|line| parse_ics_datetime(&line.key, &line.value).ok())
     };
-    if json {
-        println!("{}", serde_json::to_string_pretty(&output)?);
-    } else if output.dry_run {
-        println!("預覽 METHOD:REPLY（{}），未寄送。", output.reply.partstat);
-        println!("收件者：{}", output.to);
-        println!("主旨：{}", output.subject);
-        println!();
-        print!("{}", output.reply.ics);
-    } else {
-        println!(
-            "已寄送 METHOD:REPLY（{}）給 {}；未修改本機或伺服器行事曆。",
-            output.reply.partstat, output.to
-        );
-        if let Some(id) = &output.message_id {
-            println!("Message-ID：{id}");
-        }
-    }
-    Ok(())
+    Ok(InviteSummary {
+        summary: event
+            .first("SUMMARY")
+            .map(|line| unescape_ical_text(&line.value))
+            .unwrap_or_default(),
+        organizer: event
+            .first("ORGANIZER")
+            .map(|line| calendar_address(&line.value)),
+        start: time("DTSTART"),
+        end: time("DTEND"),
+        location: event
+            .first("LOCATION")
+            .map(|line| unescape_ical_text(&line.value))
+            .filter(|value| !value.trim().is_empty()),
+        partstat: self_email.and_then(|email| {
+            let line = event
+                .all("ATTENDEE")
+                .find(|line| is_self_attendee(line, &email))?;
+            parameters(&line.key).iter().skip(1).find_map(|parameter| {
+                let (name, value) = parameter.split_once('=')?;
+                name.eq_ignore_ascii_case("PARTSTAT")
+                    .then(|| value.trim_matches('"').to_ascii_uppercase())
+            })
+        }),
+    })
 }
 
 /// Finds the first text/calendar (or application/ics) part of a mail.

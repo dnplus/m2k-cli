@@ -1,3 +1,4 @@
+use crate::meeting_rsvp::RsvpResponse;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 
@@ -29,15 +30,39 @@ pub enum Prompt {
         dir: String,
         notice: Option<String>,
     },
+    /// `confirm` 為假時在選回覆與輸入 COMMENT；為真時等 y。
+    Rsvp {
+        id: String,
+        summary: String,
+        organizer: String,
+        response: RsvpResponse,
+        comment: String,
+        confirm: bool,
+    },
 }
+
+pub const RSVP_RESPONSES: [RsvpResponse; 3] = [
+    RsvpResponse::Accept,
+    RsvpResponse::Decline,
+    RsvpResponse::Tentative,
+];
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
     None,
     Cancel,
-    Move { folder: String },
+    Move {
+        folder: String,
+    },
     Delete,
-    Save { index: usize, path: PathBuf },
+    Save {
+        index: usize,
+        path: PathBuf,
+    },
+    Rsvp {
+        response: RsvpResponse,
+        comment: Option<String>,
+    },
 }
 
 impl Prompt {
@@ -61,6 +86,45 @@ impl Prompt {
                 KeyCode::Char('y') | KeyCode::Char('Y') => Action::Delete,
                 _ => Action::None,
             },
+            Self::Rsvp {
+                confirm: true,
+                response,
+                comment,
+                ..
+            } => match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => Action::Rsvp {
+                    response: *response,
+                    comment: Some(comment.trim().to_owned()).filter(|c| !c.is_empty()),
+                },
+                _ => Action::None,
+            },
+            Self::Rsvp {
+                response,
+                comment,
+                confirm,
+                ..
+            } => {
+                let step = |by: usize| {
+                    let at = RSVP_RESPONSES
+                        .iter()
+                        .position(|r| r == response)
+                        .unwrap_or(0);
+                    RSVP_RESPONSES[(at + by) % RSVP_RESPONSES.len()]
+                };
+                match key.code {
+                    KeyCode::Tab | KeyCode::Right | KeyCode::Down => *response = step(1),
+                    KeyCode::BackTab | KeyCode::Left | KeyCode::Up => {
+                        *response = step(RSVP_RESPONSES.len() - 1)
+                    }
+                    KeyCode::Enter => *confirm = true,
+                    KeyCode::Backspace => {
+                        comment.pop();
+                    }
+                    KeyCode::Char(c) if !ctrl => comment.push(c),
+                    _ => {}
+                }
+                Action::None
+            }
             Self::Move {
                 confirm: true,
                 input,
@@ -215,6 +279,46 @@ mod tests {
             assert_eq!(press(&mut prompt, code), Action::None);
         }
         assert_eq!(press(&mut prompt, KeyCode::Char('y')), Action::Delete);
+    }
+
+    #[test]
+    fn rsvp_cycles_the_answer_keeps_the_comment_and_sends_only_on_y() {
+        let mut prompt = Prompt::Rsvp {
+            id: "m1".into(),
+            summary: "季度回顧".into(),
+            organizer: "carol@example.test".into(),
+            response: RsvpResponse::Accept,
+            comment: String::new(),
+            confirm: false,
+        };
+        press(&mut prompt, KeyCode::Left);
+        assert!(matches!(
+            &prompt,
+            Prompt::Rsvp {
+                response: RsvpResponse::Tentative,
+                ..
+            }
+        ));
+        press(&mut prompt, KeyCode::Tab);
+        press(&mut prompt, KeyCode::Tab);
+        for c in " 出差 ".chars() {
+            press(&mut prompt, KeyCode::Char(c));
+        }
+        assert_eq!(
+            press(&mut prompt, KeyCode::Char('y')),
+            Action::None,
+            "輸入階段的 y 是 COMMENT 文字"
+        );
+        assert_eq!(press(&mut prompt, KeyCode::Enter), Action::None);
+        assert_eq!(press(&mut prompt, KeyCode::Char('n')), Action::None);
+        assert_eq!(
+            press(&mut prompt, KeyCode::Char('y')),
+            Action::Rsvp {
+                response: RsvpResponse::Decline,
+                comment: Some("出差 y".into())
+            }
+        );
+        assert_eq!(press(&mut prompt, KeyCode::Esc), Action::Cancel);
     }
 
     #[test]

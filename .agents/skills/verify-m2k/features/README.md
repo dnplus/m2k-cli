@@ -40,6 +40,7 @@ Each file has an H1, one paragraph, and four H2s in order: `Sub-features`, `How 
 - [TUI workbench](./tui-workbench.md) — tabs, mail detail, contact search, clean exit.
 - [TUI reply draft](./tui-reply-draft.md) — `R` in mail detail, `$EDITOR`/built-in input, confirm, demo save-only, fixture send.
 - [TUI mail actions](./tui-mail-actions.md) — `s`/`f` flags, `m`/`x` move and delete confirmation, `c`/`F` compose and forward, `a` attachment save without overwrite, demo refusal.
+- [TUI meeting RSVP](./tui-rsvp.md) — invite summary in mail detail, `i` accept/decline/tentative with comment, confirm/Esc, no-invite and demo refusal, fixture REPLY send.
 - [Calendar create / edit / delete](./calendar-crud.md) — CLI `calendar create/update --title …`, TUI `n`/`e`/`x` with confirmation, guards, demo refusal, fixture writes and ETag conflict.
 - [Config and retention](./config-retention.md) — `config set` persists across processes.
 - [Offline guard and JSON errors](./offline-guard.md) — demo refuses online writes; JSON error contract.
