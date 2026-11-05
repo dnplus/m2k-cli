@@ -16,6 +16,7 @@ use std::{
     sync::mpsc::{self, Receiver},
 };
 
+mod book;
 mod prefs;
 
 const LABELS: [&str; 6] = [
@@ -56,7 +57,7 @@ pub(super) struct RoomFinder {
     entered: bool,
     start_edited: bool,
     booking: Option<BookingPick>,
-    draft: Option<crate::meeting_draft::Draft>,
+    draft: Option<book::Flow>,
     sites: String,
 }
 
@@ -246,7 +247,33 @@ impl RoomFinder {
         );
     }
 
+    pub fn writing(&self) -> bool {
+        self.draft.as_ref().is_some_and(book::Flow::writing)
+    }
+
+    #[cfg(test)]
+    pub(super) fn open_draft(
+        &mut self,
+        room: &meeting::MeetingRoom,
+        range: &meeting::TimeRange,
+        title: &str,
+        attendees: &[String],
+    ) {
+        let draft = crate::meeting_draft::save_draft(&self.dir, room, range, title, attendees)
+            .expect("save draft");
+        self.draft = Some(book::Flow::new(&self.dir, draft));
+    }
+
+    pub fn hint(&self) -> Option<&'static str> {
+        self.draft.as_ref().map(book::Flow::hint)
+    }
+
     pub fn poll(&mut self) -> bool {
+        if let Some(status) = self.draft.as_mut().and_then(book::Flow::poll) {
+            self.status = status;
+            self.scroll = 0;
+            return true;
+        }
         let Some(response) = self.pending.as_ref().and_then(receive) else {
             return false;
         };
@@ -278,7 +305,11 @@ impl RoomFinder {
     }
 
     pub fn consume_escape(&mut self) -> bool {
-        if self.draft.take().is_some() {
+        if let Some(flow) = self.draft.as_mut() {
+            match flow.escape() {
+                Some(status) => self.status = status,
+                None => self.draft = None,
+            }
             self.scroll = 0;
             return true;
         }
@@ -294,11 +325,16 @@ impl RoomFinder {
     }
 
     pub fn key(&mut self, key: KeyEvent) {
-        if self.draft.is_some() {
+        if let Some(flow) = self.draft.as_mut() {
             match key.code {
                 KeyCode::PageUp | KeyCode::Up => self.scroll = self.scroll.saturating_sub(5),
                 KeyCode::PageDown | KeyCode::Down => self.scroll = self.scroll.saturating_add(5),
-                _ => {}
+                code => {
+                    if let Some(status) = flow.key(code) {
+                        self.status = status;
+                        self.scroll = 0;
+                    }
+                }
             }
             return;
         }
@@ -482,10 +518,10 @@ impl RoomFinder {
         ) {
             Ok(draft) => {
                 self.status = format!(
-                    "草稿已保存 {} → {} · 尚未寫入行事曆",
+                    "草稿已保存 {} → {} · 尚未寫入行事曆 · b 檢查並預約",
                     draft.start, draft.end
                 );
-                self.draft = Some(draft);
+                self.draft = Some(book::Flow::new(&self.dir, draft));
                 self.booking = None;
                 self.scroll = 0;
             }
@@ -579,23 +615,10 @@ impl RoomFinder {
     }
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
-        if let Some(draft) = &self.draft {
-            let mut text = format!(
-                "{}\n{} → {}\n與會者：{}\nUID：{}\nICS：{}\nJSON：{}\n\n",
-                draft.title,
-                draft.start,
-                draft.end,
-                draft.attendees.join(", "),
-                draft.uid,
-                draft.invitation.display(),
-                draft.manifest.display()
-            );
-            for (name, command) in &draft.actions {
-                text.push_str(&format!("{name}\n{command}\n\n"));
-            }
+        if let Some(flow) = &self.draft {
             frame.render_widget(
-                Paragraph::new(text)
-                    .block(block(" 草稿已保存 · PageUp/Down 捲動 · Esc 返回 "))
+                Paragraph::new(flow.text())
+                    .block(block(flow.title()))
                     .wrap(Wrap { trim: false })
                     .scroll((self.scroll, 0)),
                 area,
@@ -1381,7 +1404,7 @@ mod tests {
         assert!(finder.booking.is_none());
         assert!(finder.status.contains("2026-10-07T14:00:00+08:00"));
         assert!(finder.status.contains("2026-10-07T16:00:00+08:00"));
-        let draft = finder.draft.as_ref().unwrap();
+        let draft = &finder.draft.as_ref().unwrap().draft;
         assert!(draft.actions["check_booking"].contains("--data-dir"));
         assert!(draft.invitation.exists());
         assert!(finder.status.contains("尚未寫入行事曆"));

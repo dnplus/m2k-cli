@@ -1448,6 +1448,10 @@ impl App {
                 self.status = "郵件操作進行中，請等結果再離開".into();
                 return Ok(false);
             }
+            if self.room_finder.writing() {
+                self.room_finder.status = "會議室預約／邀請寄送中，請等結果再離開".into();
+                return Ok(false);
+            }
             if self
                 .event_form
                 .as_ref()
@@ -1922,7 +1926,12 @@ impl App {
             String::new()
         };
         let hint = if self.tab == 3 {
-            "Tab 欄位 · Enter 查詢／段內起迄 · F5 更新 · Esc 返回 · Ctrl-C 離開 · ? 說明".into()
+            self.room_finder
+                .hint()
+                .unwrap_or(
+                    "Tab 欄位 · Enter 查詢／段內起迄 · F5 更新 · Esc 返回 · Ctrl-C 離開 · ? 說明",
+                )
+                .into()
         } else if self.tab == 1 {
             let unit = match self.calendar.view {
                 calendar::CalendarView::ThreeDay => "日",
@@ -2368,7 +2377,7 @@ impl App {
 
     fn draw_help(&self, frame: &mut Frame, area: Rect) {
         let width = area.width.min(80);
-        let height = area.height.min(if self.tab == 1 { 20 } else { 26 });
+        let height = area.height.min(if self.tab == 1 { 20 } else { 28 });
         let popup = Rect::new(
             area.x + (area.width - width) / 2,
             area.y + (area.height - height) / 2,
@@ -2381,7 +2390,7 @@ impl App {
                 .block(block(" 行事曆操作說明 ")).wrap(Wrap { trim: false }), popup);
             return;
         }
-        frame.render_widget(Paragraph::new("1 / 2 / 3 / 4、Tab     郵件、行事曆、聯絡人、找會議室\n↑ / ↓、j / k           選取資料 / 捲動詳情\n← / →、h / l           切換資料夾\nEnter / Esc            開啟詳情 / 返回列表\n郵件詳情內 R          回覆草稿（$EDITOR；確認後才寄出）\n郵件詳情內 F / 郵件 c  轉寄／寫新信（同回覆草稿與確認畫面）\n郵件 s / f             切換已讀／星號（立即寫入伺服器）\n郵件 m / x             移動／刪除選取郵件（確認畫面 y 才執行）\n郵件詳情內 a           存附件（預設 ~/Downloads，不覆寫）\n郵件詳情內 i           回覆會議邀請：接受／拒絕／暫定（確認畫面 y 才寄出）\n/ 或點搜尋框           搜尋中文或英文\nEnter 或停止輸入       合併本機 + IMAP 搜尋（離線保留本機結果）\n[ / ]、PageUp/Down     前後頁 / 捲動詳情\ng / G、Home / End      第一頁 / 最後一頁\nr                      郵件增量；行事曆 ±30 天；聯絡人讀本機\n聯絡人 Shift-R         手動背景同步全公司目錄\n滑鼠                   點頁籤、資料夾、列、搜尋框、上一頁/下一頁\n滾輪                   捲動游標所在資料夾、列表或詳情\n會議室時間             明天 14:00 / 下週一 下午兩點（台北；RFC3339 亦可）\n會議室預設             6 人 · 120 分 · 09:30-17:30\n結束留空               從開始找當日空檔；清空分鐘需填結束\n會議室 Enter           查詢；分鐘結果再 Enter 於空檔內挑實際起迄\n? / Esc                關閉說明\nq / Ctrl-C             離開（表單內 Ctrl-C）").block(block(" 操作說明 ")).wrap(Wrap{trim:false}),popup);
+        frame.render_widget(Paragraph::new("1 / 2 / 3 / 4、Tab     郵件、行事曆、聯絡人、找會議室\n↑ / ↓、j / k           選取資料 / 捲動詳情\n← / →、h / l           切換資料夾\nEnter / Esc            開啟詳情 / 返回列表\n郵件詳情內 R          回覆草稿（$EDITOR；確認後才寄出）\n郵件詳情內 F / 郵件 c  轉寄／寫新信（同回覆草稿與確認畫面）\n郵件 s / f             切換已讀／星號（立即寫入伺服器）\n郵件 m / x             移動／刪除選取郵件（確認畫面 y 才執行）\n郵件詳情內 a           存附件（預設 ~/Downloads，不覆寫）\n郵件詳情內 i           回覆會議邀請：接受／拒絕／暫定（確認畫面 y 才寄出）\n/ 或點搜尋框           搜尋中文或英文\nEnter 或停止輸入       合併本機 + IMAP 搜尋（離線保留本機結果）\n[ / ]、PageUp/Down     前後頁 / 捲動詳情\ng / G、Home / End      第一頁 / 最後一頁\nr                      郵件增量；行事曆 ±30 天；聯絡人讀本機\n聯絡人 Shift-R         手動背景同步全公司目錄\n滑鼠                   點頁籤、資料夾、列、搜尋框、上一頁/下一頁\n滾輪                   捲動游標所在資料夾、列表或詳情\n會議室時間             明天 14:00 / 下週一 下午兩點（台北；RFC3339 亦可）\n會議室預設             6 人 · 120 分 · 09:30-17:30\n結束留空               從開始找當日空檔；清空分鐘需填結束\n會議室 Enter           查詢；分鐘結果再 Enter 於空檔內挑實際起迄\n草稿畫面 b             live 檢查（同 book --dry-run），確認畫面 y 才預約\n預約完成後 i           確認收件人後 y 寄出會議邀請（METHOD:REQUEST）\n? / Esc                關閉說明\nq / Ctrl-C             離開（表單內 Ctrl-C）").block(block(" 操作說明 ")).wrap(Wrap{trim:false}),popup);
     }
 }
 
@@ -5078,6 +5087,239 @@ mod tests {
         assert_eq!(
             attendees,
             vec!["ATTENDEE;PARTSTAT=TENTATIVE:mailto:fixture@example.test"]
+        );
+        for name in ["M2K_PASSWORD", "M2K_TEST_ROOT_CERT", "M2K_KEYCHAIN"] {
+            std::env::remove_var(name);
+        }
+    }
+
+    fn settle_rooms(app: &mut App) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while app
+            .room_finder
+            .hint()
+            .is_some_and(|hint| hint.starts_with("背景執行中"))
+        {
+            assert!(Instant::now() < deadline, "room job did not finish");
+            app.poll_background().unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn fixture_room(info: &fixture::Info) -> crate::meeting::MeetingRoom {
+        crate::meeting::MeetingRoom {
+            name: "第一會議室 (A)".into(),
+            access_name: "room-a".into(),
+            site: "總部".into(),
+            capacity: Some(8),
+            calendar_url: info.room_calendar_url.clone(),
+            source: "fixture".into(),
+        }
+    }
+
+    fn future_range(days: i64, hour: u32) -> crate::meeting::TimeRange {
+        let day = (Utc::now() + chrono::Duration::days(days))
+            .with_timezone(&chrono_tz::Asia::Taipei)
+            .date_naive();
+        let start = format!("{day}T{hour:02}:00:00+08:00");
+        let end = format!("{day}T{:02}:00:00+08:00", hour + 1);
+        crate::meeting::parse_time_range(&start, &end).unwrap()
+    }
+
+    #[test]
+    fn demo_room_draft_refuses_booking_with_the_cli_reason_and_writes_nothing() {
+        let temp = tempdir().unwrap();
+        crate::demo::seed(temp.path()).unwrap();
+        let mut app = App::new(temp.path()).unwrap();
+        type_keys(&mut app, &[KeyCode::Char('4')]);
+        let room = crate::meeting::MeetingRoom {
+            name: "北區範例會議室".into(),
+            access_name: "demo-room".into(),
+            site: "北區".into(),
+            capacity: Some(8),
+            calendar_url: "https://mail.example.test/room/".into(),
+            source: "demo".into(),
+        };
+        app.room_finder
+            .open_draft(&room, &future_range(30, 10), "週會", &[]);
+        let before = Store::open(temp.path())
+            .unwrap()
+            .list(Kind::Calendar, None, None, usize::MAX)
+            .unwrap()
+            .len();
+        let screen = rendered_text(&mut app, 120, 40, false);
+        assert!(screen.contains("b 檢查並預約"), "{screen}");
+        type_keys(&mut app, &[KeyCode::Char('y')]);
+        assert!(
+            app.room_finder.hint().unwrap().starts_with("b "),
+            "y alone does nothing"
+        );
+        type_keys(&mut app, &[KeyCode::Char('b')]);
+        settle_rooms(&mut app);
+        let screen = rendered_text(&mut app, 120, 40, false);
+        assert!(screen.contains("無法預約"), "{screen}");
+        assert!(screen.contains("展示資料不提供會議室預約"), "{screen}");
+        type_keys(&mut app, &[KeyCode::Char('y')]);
+        assert!(!rendered_text(&mut app, 120, 40, false).contains("確認預約"));
+        let after = Store::open(temp.path())
+            .unwrap()
+            .list(Kind::Calendar, None, None, usize::MAX)
+            .unwrap()
+            .len();
+        assert_eq!(before, after, "demo booking writes nothing locally");
+    }
+
+    #[test]
+    fn room_booking_against_fixture_checks_confirms_books_and_invites_once() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        const PASSWORD: &str = "isolated-fixture-password";
+        let root = tempdir().unwrap();
+        let info = fixture::start(fixture::Options {
+            data_dir: root.path().join("fixture"),
+            user: "fixture@example.test".into(),
+            password: PASSWORD.into(),
+            imap_port: 0,
+            smtp_port: 0,
+            http_port: 0,
+            sync_collection: false,
+        })
+        .unwrap();
+        std::env::set_var("M2K_PASSWORD", PASSWORD);
+        std::env::set_var("M2K_TEST_ROOT_CERT", &info.ca_cert);
+        std::env::set_var("M2K_KEYCHAIN", "/nonexistent/m2k-test.keychain-db");
+        let dir = root.path().join("client");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = Config::with_site_profile(info.user.clone(), &info.server, None).unwrap();
+        cfg.imap_port = info.imap_port;
+        cfg.smtp_port = info.smtp_port;
+        config::save(&dir, &cfg).unwrap();
+        Store::open(&dir).unwrap().ensure_account(&cfg).unwrap();
+        let mut app = App::new(&dir).unwrap();
+        type_keys(&mut app, &[KeyCode::Char('4')]);
+        let room = fixture_room(&info);
+        let range = future_range(40, 10);
+        app.room_finder
+            .open_draft(&room, &range, "TUI 預約驗收", &["bob@example.test".into()]);
+
+        type_keys(&mut app, &[KeyCode::Char('b')]);
+        settle_rooms(&mut app);
+        let confirm = rendered_text(&mut app, 140, 40, false);
+        for expected in [
+            "live 檢查通過：會議室在這段時間仍空",
+            "會議室：第一會議室 (A)",
+            &format!(
+                "開始：{}（Asia/Taipei）",
+                range.start.format("%Y-%m-%d %H:%M")
+            ),
+            "主旨：TUI 預約驗收",
+            "個人行事曆（fixture@example.test）",
+            "會議室行事曆（",
+        ] {
+            assert!(confirm.contains(expected), "missing {expected}:\n{confirm}");
+        }
+        assert!(
+            fixture_events(&info, "dav.put").is_empty(),
+            "dry-run must not PUT"
+        );
+
+        type_keys(&mut app, &[KeyCode::Esc]);
+        assert!(
+            app.room_finder.status.contains("已取消預約"),
+            "{}",
+            app.room_finder.status
+        );
+        assert!(
+            fixture_events(&info, "dav.put").is_empty(),
+            "Esc must not PUT"
+        );
+
+        type_keys(&mut app, &[KeyCode::Char('b')]);
+        settle_rooms(&mut app);
+        type_keys(&mut app, &[KeyCode::Char('y')]);
+        let quit = app
+            .key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert!(!quit, "Ctrl-C waits for the booking");
+        settle_rooms(&mut app);
+        assert!(
+            app.room_finder.status.contains("已預約 第一會議室 (A)"),
+            "{}",
+            app.room_finder.status
+        );
+        let drafts = dir.canonicalize().unwrap().join("drafts");
+        let invite = drafts.read_dir().unwrap().next().unwrap().unwrap().path();
+        let raw = std::fs::read_to_string(invite.join("invite.ics")).unwrap();
+        let uid = crate::meeting::parse_meeting_ics(&raw).unwrap()[0]
+            .uid
+            .clone()
+            .unwrap();
+        let mut paths = fixture_events(&info, "dav.put")
+            .iter()
+            .map(|put| put["path"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                format!(
+                    "/cgi-bin/cal/caldav/calendars/fixture@example.test/default/{}.ics",
+                    uid.replace('@', "%40")
+                ),
+                format!(
+                    "/cgi-bin/cal/caldav/calendars/room-a@example.test/default/{}.ics",
+                    uid.replace('@', "%40")
+                ),
+            ],
+            "exactly one PUT to my calendar and one to the room"
+        );
+        assert!(
+            fixture_events(&info, "smtp.message").is_empty(),
+            "booking never mails"
+        );
+
+        type_keys(&mut app, &[KeyCode::Char('i')]);
+        let recipients = rendered_text(&mut app, 140, 40, false);
+        assert!(recipients.contains("確認寄送邀請"), "{recipients}");
+        assert!(recipients.contains("bob@example.test"), "{recipients}");
+        type_keys(&mut app, &[KeyCode::Esc]);
+        assert!(
+            fixture_events(&info, "smtp.message").is_empty(),
+            "Esc must not send"
+        );
+        type_keys(&mut app, &[KeyCode::Char('i'), KeyCode::Char('y')]);
+        settle_rooms(&mut app);
+        assert!(
+            app.room_finder
+                .status
+                .contains("已寄送會議邀請給 bob@example.test"),
+            "{}",
+            app.room_finder.status
+        );
+        let sent = fixture_events(&info, "smtp.message");
+        assert_eq!(sent.len(), 1, "exactly one invite: {sent:?}");
+        assert_eq!(sent[0]["to"], serde_json::json!(["bob@example.test"]));
+        let eml = std::fs::read(info.data_dir.join(sent[0]["file"].as_str().unwrap())).unwrap();
+        let ics = crate::meeting_rsvp::invite_from_mail(&eml)
+            .unwrap()
+            .ics
+            .replace("\r\n ", "");
+        assert!(ics.lines().any(|line| line == "METHOD:REQUEST"), "{ics}");
+        assert!(
+            ics.lines().any(|line| line == format!("UID:{uid}")),
+            "{ics}"
+        );
+
+        app.room_finder.open_draft(&room, &range, "撞期會議", &[]);
+        type_keys(&mut app, &[KeyCode::Char('b')]);
+        settle_rooms(&mut app);
+        let conflict = rendered_text(&mut app, 140, 40, false);
+        assert!(conflict.contains("無法預約"), "{conflict}");
+        assert!(conflict.contains("會議室衝突"), "{conflict}");
+        assert!(conflict.contains("invite.ics"), "draft kept: {conflict}");
+        assert_eq!(
+            fixture_events(&info, "dav.put").len(),
+            2,
+            "conflict writes nothing"
         );
         for name in ["M2K_PASSWORD", "M2K_TEST_ROOT_CERT", "M2K_KEYCHAIN"] {
             std::env::remove_var(name);
