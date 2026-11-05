@@ -41,6 +41,7 @@ mod event_form;
 #[allow(dead_code)]
 mod fixture;
 mod mail_prompt;
+mod org_chart;
 mod reply;
 mod rooms;
 
@@ -126,6 +127,7 @@ struct App {
     event_form: Option<event_form::EventForm>,
     pending_event: Option<Receiver<Result<Option<Item>>>>,
     kept_event: Option<event_form::Kept>,
+    org_chart: Option<org_chart::OrgChartView>,
 }
 
 impl App {
@@ -178,6 +180,7 @@ impl App {
             event_form: None,
             pending_event: None,
             kept_event: None,
+            org_chart: None,
         };
         app.reload()?;
         Ok(app)
@@ -1123,6 +1126,7 @@ impl App {
 
     fn switch(&mut self, tab: usize) -> Result<()> {
         self.tab = tab % NAMES.len();
+        self.org_chart = None;
         self.collection = 0;
         self.query.clear();
         self.searching = false;
@@ -1183,7 +1187,7 @@ impl App {
 
     fn start_sync(&mut self) {
         if self.tab == 2 {
-            if let Err(error) = self.reload() {
+            if let Err(error) = self.reload().and_then(|()| self.refresh_org_chart()) {
                 self.status = format!("本機聯絡人讀取失敗：{error:#}");
             } else if self.pending_directory.is_none() {
                 self.status = "已更新本機聯絡人 · Shift-R 同步全公司目錄".into();
@@ -1352,6 +1356,7 @@ impl App {
                 Err(error) => format!("公司目錄同步失敗：{error:#} · Shift-R 可重試"),
             };
             self.reload()?;
+            self.refresh_org_chart()?;
             dirty = true;
         }
         if let Some(response) = self
@@ -1422,6 +1427,60 @@ impl App {
             dirty = true;
         }
         Ok(dirty)
+    }
+
+    fn toggle_org_chart(&mut self) -> Result<()> {
+        if self.org_chart.take().is_some() {
+            self.status = "聯絡人列表 · v 切換組織圖".into();
+            return Ok(());
+        }
+        self.close_detail();
+        let (view, warning) = org_chart::OrgChartView::load(&self.dir)?;
+        self.status = warning.unwrap_or_else(|| view.summary());
+        self.org_chart = Some(view);
+        Ok(())
+    }
+
+    fn refresh_org_chart(&mut self) -> Result<()> {
+        if self.org_chart.is_some() {
+            let (view, _) = org_chart::OrgChartView::load(&self.dir)?;
+            self.org_chart = Some(view);
+        }
+        Ok(())
+    }
+
+    /// 組織圖開啟時接手選取與展開按鍵；其餘按鍵回到一般處理。
+    fn org_chart_key(&mut self, key: KeyEvent) -> bool {
+        let Some(view) = self.org_chart.as_mut() else {
+            return false;
+        };
+        if view.detail {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.scroll = self.scroll.saturating_sub(1);
+                    return true;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.scroll = self.scroll.saturating_add(1);
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => view.move_selection(-1),
+            KeyCode::Down | KeyCode::Char('j') => view.move_selection(1),
+            KeyCode::PageUp | KeyCode::Char('[') => view.move_selection(-10),
+            KeyCode::PageDown | KeyCode::Char(']') => view.move_selection(10),
+            KeyCode::Home | KeyCode::Char('g') => view.select_edge(false),
+            KeyCode::End | KeyCode::Char('G') => view.select_edge(true),
+            KeyCode::Enter => view.activate(),
+            KeyCode::Esc => view.detail = false,
+            KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') => {}
+            _ => return false,
+        }
+        self.scroll = 0;
+        true
     }
 
     fn key(&mut self, key: KeyEvent) -> Result<bool> {
@@ -1545,9 +1604,17 @@ impl App {
             }
             return Ok(false);
         }
+        if self.tab == 2 && self.org_chart_key(key) {
+            return Ok(false);
+        }
         match key.code {
             KeyCode::Char('q') => return Ok(true),
             KeyCode::Char('?') => self.help = true,
+            KeyCode::Char('v') if self.tab == 2 => {
+                if let Err(error) = self.toggle_org_chart() {
+                    self.status = format!("組織圖讀取失敗：{error:#}");
+                }
+            }
             KeyCode::Char('R') if self.tab == 2 => self.start_directory_sync(),
             KeyCode::Char('r') if self.tab == 0 && key.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.start_reply(std::env::var("EDITOR").ok())
@@ -1571,6 +1638,7 @@ impl App {
             }
             KeyCode::Char('r') => self.start_sync(),
             KeyCode::Char('/') => {
+                self.org_chart = None;
                 self.searching = true;
                 self.close_detail();
             }
@@ -1743,6 +1811,7 @@ impl App {
                 return Ok(());
             }
             if self.hits.search.contains(point) {
+                self.org_chart = None;
                 self.searching = true;
                 self.close_detail();
             } else if self.hits.previous.contains(point) {
@@ -1940,7 +2009,7 @@ impl App {
             };
             format!("v 切視圖 · d/w/m 直選 · [ ] / h l 移{unit} · j/k 選活動 · n 新增 · e 編輯 · x 刪除 · ? 說明")
         } else if self.tab == 2 {
-            "q 離開 · 1/2/3/4 頁籤 · / 搜尋 · [ ] 翻頁 · r 讀本機 · Shift-R 同步公司 · ? 說明"
+            "q 離開 · 1/2/3/4 頁籤 · / 搜尋 · [ ] 翻頁 · v 組織圖 · r 讀本機 · Shift-R 同步公司 · ? 說明"
                 .into()
         } else {
             if self.detail {
@@ -1992,6 +2061,19 @@ impl App {
     fn draw_workspace(&mut self, frame: &mut Frame, area: Rect) {
         if self.tab == 1 {
             self.draw_calendar_workspace(frame, area);
+            return;
+        }
+        if let Some(view) = self.org_chart.as_mut() {
+            if area.width >= 80 {
+                let cols = Layout::horizontal([Constraint::Percentage(50), Constraint::Min(0)])
+                    .split(area);
+                view.draw_tree(frame, cols[0]);
+                view.draw_detail(frame, cols[1], self.scroll);
+            } else if view.detail {
+                view.draw_detail(frame, area, self.scroll);
+            } else {
+                view.draw_tree(frame, area);
+            }
             return;
         }
         let wide = area.width >= 112;
@@ -2377,7 +2459,7 @@ impl App {
 
     fn draw_help(&self, frame: &mut Frame, area: Rect) {
         let width = area.width.min(80);
-        let height = area.height.min(if self.tab == 1 { 20 } else { 28 });
+        let height = area.height.min(if self.tab == 1 { 20 } else { 29 });
         let popup = Rect::new(
             area.x + (area.width - width) / 2,
             area.y + (area.height - height) / 2,
@@ -2390,7 +2472,7 @@ impl App {
                 .block(block(" 行事曆操作說明 ")).wrap(Wrap { trim: false }), popup);
             return;
         }
-        frame.render_widget(Paragraph::new("1 / 2 / 3 / 4、Tab     郵件、行事曆、聯絡人、找會議室\n↑ / ↓、j / k           選取資料 / 捲動詳情\n← / →、h / l           切換資料夾\nEnter / Esc            開啟詳情 / 返回列表\n郵件詳情內 R          回覆草稿（$EDITOR；確認後才寄出）\n郵件詳情內 F / 郵件 c  轉寄／寫新信（同回覆草稿與確認畫面）\n郵件 s / f             切換已讀／星號（立即寫入伺服器）\n郵件 m / x             移動／刪除選取郵件（確認畫面 y 才執行）\n郵件詳情內 a           存附件（預設 ~/Downloads，不覆寫）\n郵件詳情內 i           回覆會議邀請：接受／拒絕／暫定（確認畫面 y 才寄出）\n/ 或點搜尋框           搜尋中文或英文\nEnter 或停止輸入       合併本機 + IMAP 搜尋（離線保留本機結果）\n[ / ]、PageUp/Down     前後頁 / 捲動詳情\ng / G、Home / End      第一頁 / 最後一頁\nr                      郵件增量；行事曆 ±30 天；聯絡人讀本機\n聯絡人 Shift-R         手動背景同步全公司目錄\n滑鼠                   點頁籤、資料夾、列、搜尋框、上一頁/下一頁\n滾輪                   捲動游標所在資料夾、列表或詳情\n會議室時間             明天 14:00 / 下週一 下午兩點（台北；RFC3339 亦可）\n會議室預設             6 人 · 120 分 · 09:30-17:30\n結束留空               從開始找當日空檔；清空分鐘需填結束\n會議室 Enter           查詢；分鐘結果再 Enter 於空檔內挑實際起迄\n草稿畫面 b             live 檢查（同 book --dry-run），確認畫面 y 才預約\n預約完成後 i           確認收件人後 y 寄出會議邀請（METHOD:REQUEST）\n? / Esc                關閉說明\nq / Ctrl-C             離開（表單內 Ctrl-C）").block(block(" 操作說明 ")).wrap(Wrap{trim:false}),popup);
+        frame.render_widget(Paragraph::new("1 / 2 / 3 / 4、Tab     郵件、行事曆、聯絡人、找會議室\n↑ / ↓、j / k           選取資料 / 捲動詳情\n← / →、h / l           切換資料夾\nEnter / Esc            開啟詳情 / 返回列表\n郵件詳情內 R          回覆草稿（$EDITOR；確認後才寄出）\n郵件詳情內 F / 郵件 c  轉寄／寫新信（同回覆草稿與確認畫面）\n郵件 s / f             切換已讀／星號（立即寫入伺服器）\n郵件 m / x             移動／刪除選取郵件（確認畫面 y 才執行）\n郵件詳情內 a           存附件（預設 ~/Downloads，不覆寫）\n郵件詳情內 i           回覆會議邀請：接受／拒絕／暫定（確認畫面 y 才寄出）\n/ 或點搜尋框           搜尋中文或英文\nEnter 或停止輸入       合併本機 + IMAP 搜尋（離線保留本機結果）\n[ / ]、PageUp/Down     前後頁 / 捲動詳情\ng / G、Home / End      第一頁 / 最後一頁\nr                      郵件增量；行事曆 ±30 天；聯絡人讀本機\n聯絡人 Shift-R         手動背景同步全公司目錄\n聯絡人 v              列表／組織圖；Enter 展開收合部門\n滑鼠                   點頁籤、資料夾、列、搜尋框、上一頁/下一頁\n滾輪                   捲動游標所在資料夾、列表或詳情\n會議室時間             明天 14:00 / 下週一 下午兩點（台北；RFC3339 亦可）\n會議室預設             6 人 · 120 分 · 09:30-17:30\n結束留空               從開始找當日空檔；清空分鐘需填結束\n會議室 Enter           查詢；分鐘結果再 Enter 於空檔內挑實際起迄\n草稿畫面 b             live 檢查（同 book --dry-run），確認畫面 y 才預約\n預約完成後 i           確認收件人後 y 寄出會議邀請（METHOD:REQUEST）\n? / Esc                關閉說明\nq / Ctrl-C             離開（表單內 Ctrl-C）").block(block(" 操作說明 ")).wrap(Wrap{trim:false}),popup);
     }
 }
 
@@ -3006,10 +3088,25 @@ fn draw_event_form(frame: &mut Frame, area: Rect, form: &event_form::EventForm) 
 }
 
 pub fn render_snapshot(data_dir: &Path, width: u16, height: u16) -> Result<String> {
+    render_snapshot_after_keys(data_dir, width, height, &[])
+}
+
+/// 依序送出按鍵後輸出一個畫面；供整合測試驗證按鍵流程，不需要 TTY。
+pub fn render_snapshot_after_keys(
+    data_dir: &Path,
+    width: u16,
+    height: u16,
+    keys: &[KeyEvent],
+) -> Result<String> {
     if width == 0 || height == 0 {
         return Ok(String::new());
     }
     let mut app = App::new(data_dir)?;
+    for key in keys {
+        if app.key(*key)? {
+            break;
+        }
+    }
     let mut terminal = Terminal::new(TestBackend::new(width, height))?;
     terminal.draw(|frame| app.draw(frame))?;
     let buffer = terminal.backend().buffer();
