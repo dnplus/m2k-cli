@@ -9,8 +9,8 @@ Mail2000 的 Rust 原生 CLI 與 TUI。參考既有 Mail2000 連接器的工作�
 從 [Releases](https://github.com/dnplus/m2k-cli/releases) 下載對應平台的壓縮檔（Linux x86_64、macOS Apple Silicon／Intel、Windows x86_64），核對同名 `.sha256` 後解壓，把 `m2k`（Windows 為 `m2k.exe`）放到 PATH 裡：
 
 ```sh
-shasum -a 256 -c m2k-v0.3.0-aarch64-apple-darwin.tar.gz.sha256   # Linux 可用 sha256sum -c
-tar -xzf m2k-v0.3.0-aarch64-apple-darwin.tar.gz
+shasum -a 256 -c m2k-v0.4.0-aarch64-apple-darwin.tar.gz.sha256   # Linux 可用 sha256sum -c
+tar -xzf m2k-v0.4.0-aarch64-apple-darwin.tar.gz
 ```
 
 Windows 用 PowerShell 的 `Get-FileHash <檔名> -Algorithm SHA256` 比對。Linux 版在 Ubuntu 22.04 建置，執行時需要 `libdbus-1-3` 與 `libssl3`（大多數桌面發行版已內建）。macOS 版沒有經過 Apple 公證，用瀏覽器下載時若被 Gatekeeper 擋下，對解壓後的執行檔執行 `xattr -d com.apple.quarantine m2k-*/m2k` 後再開；用 `curl` 下載則不會被標記。推送 `vX.Y.Z` tag 時由 `.github/workflows/release.yml` 自動建置並發佈，tag 必須和 `Cargo.toml` 的版本一致。
@@ -144,6 +144,8 @@ m2k mail show MESSAGE_ID --full
 m2k mail show MESSAGE_ID --raw
 m2k mail thread --id MESSAGE_ID
 m2k mail thread --id MESSAGE_ID --full
+m2k mail graph --days 14
+m2k --json mail graph --person alice --days 30
 m2k mail reply MESSAGE_ID --body-file reply.txt
 m2k mail forward MESSAGE_ID --to colleague@example.com --body-file note.txt
 m2k mail send --to colleague@example.com --subject '進度' --body-file body.txt --attach report.pdf
@@ -164,6 +166,8 @@ IMAP 同步使用 `BODY.PEEK`，不改已讀狀態。快取保存完整 RFC822�
 CLI 的郵件／行事曆／聯絡人列表採固定欄寬單行，長欄位以 `…` 截斷，不畫框線、不折行；內嵌換行與控制字元轉為單行文字。完整 ID／主旨等欄位請使用 `--json ... list`。`meeting resources`／`meeting rooms` 文字列表也固定欄寬，精確模式每間房一列，分鐘模式每個連續空檔一列；加 `--json` 保留完整結果。
 
 `mail show MESSAGE_ID` 顯示指定郵件的新回覆正文，去除 `>` 引用行，以及 `On … wrote:`、`-----Original Message-----` 等明確歷史回覆區塊。`mail thread --id MESSAGE_ID`／`--subject '主旨'` 預設只顯示同主旨最新一封的新正文；`--full` 才顯示歷史郵件與引用，`thread --full --limit N` 限制最新 N 封。過濾只影響顯示，不修改 SQLite、raw 或 TUI；`show --raw` 仍輸出完整 RFC822。JSON 讀信也套用同一預設，`text` 為新正文且 `raw` 為空；加 `--full` 恢復完整 text／raw。引用辨識採文字規則，特殊格式可用 `--full` 查看原文。
+
+`mail graph` 從本機快取確定性地整理近 N 天（預設 14）的人脈與信件串，不呼叫模型、不連線，相同快取得到相同結果。信件串以 Message-ID／In-Reply-To／References 與正規化主旨（同 `mail thread`）聯集，收件匣與寄件備份的同一封信以 Message-ID 去重。每串標示 `awaiting_me`（他人最後寄出、我在收件人且未標記已回覆）、`awaiting_them`（我最後寄出）、`replied`（已標記 `\Answered`）或 `fyi`（副本、知會或自動信）；自動信依 `Auto-Submitted`、`Precedence: bulk`、`List-Id`／`List-Unsubscribe`、`X-Auto-Response-Suppress`、`Feedback-ID` 標頭或 noreply／bot 類地址判定，這類寄件者在聯絡人中標為 `automated` 並排在真人之後。沒有這些標頭的內部系統帳號，可用 `m2k config set --automated-senders 'mis,@vendor.example,ops@example.com'` 列入名單（local part、`@網域` 或完整地址，不分大小寫；每次設定取代整份名單，`--automated-senders ''` 清空），附最新回覆摘錄與可交給 `mail show` 的 ID。聯絡人依往來封數排序，列出對方寄／我寄、串數、最近往來、近期主旨與常同框的人。預設輸出 Markdown 方便直接放進代理程式脈絡，`--json` 為結構化；`--person` 只保留與某人相關的串。只有摘要快取、沒有原始標頭的郵件改用寄件者與主旨判斷。
 
 郵件保存日期優先採伺服器的 `INTERNALDATE`，避免新收到但 `Date` header 很舊的郵件被立即清除。
 
@@ -246,11 +250,16 @@ m2k directory sync --scope department
 m2k directory sync --scope department --addressbook /EXAMPLE_ALL/Engineering/Platform
 m2k directory search '王小明' --online --addressbook /EXAMPLE_ALL/Engineering/Platform
 m2k directory resolve '王小明'
+m2k directory chart --branch /EXAMPLE_ALL/Engineering
+m2k --json directory chart
+m2k directory chart --format mermaid
 ```
 
 目錄保留通訊錄階層與聯絡人所屬分支，姓名解析必須得到唯一 email。自己身份以遠端或已同步的 contact 為依據；沒有資料時明確回報缺資料。跨部門按需查找與全公司同步由使用者明確啟動；TUI 聯絡人頁只讀本機快取。
 
 首次可明確執行 `--scope company` 初始化企業目錄，再使用部門／分支 refresh；若自己所屬部門尚未確認，使用 `--addressbook` 指定實際分支。
+
+`directory chart` 從本機快取確定性輸出部門組織圖，不連線、不呼叫模型，相同快取得到相同結果。預設為縮排 Markdown：每個部門列出直屬成員（姓名、職稱、帳號、email），方便直接當代理程式脈絡；`--json` 為巢狀結構，`--format mermaid` 只畫部門與直屬人數。最上層通訊錄是全公司名單，只列沒有部門歸屬的人；兼任多個部門的人在各部門都會列出，總人數只算一次。`--branch` 只輸出指定分支及其子部門，可填 path（前導 `/` 可省略）、名稱或 URL。Mail2000 的 vCard 沒有主管或匯報欄位，所以組織圖只呈現部門歸屬，不畫匯報線也不推估主管，輸出內會註明。需要先以 `directory sync --scope company` 同步聯絡人。
 
 ## 會議與會議室
 
@@ -393,8 +402,9 @@ m2k skills install --path ~/.cursor/skills
 | --- | --- |
 | Mail2000 單一帳號與連線測試 | `init`、`auth` |
 | 收件匣同步、本機搜尋、郵件串 | `sync --kind mail`、`mail search`、`mail thread` |
+| 近期往來脈絡（人脈與待回覆串） | `mail graph` |
 | 清理預覽、精確範圍確認與執行 | `mail cleanup-preview`、`mail cleanup-execute` |
-| 全公司／部門／分支目錄、自己身份 | `directory sync/tree/search/resolve/self` |
+| 全公司／部門／分支目錄、自己身份、組織圖 | `directory sync/tree/search/resolve/self/chart` |
 | 個人與同事行事曆、日期範圍 | `calendar`、`meeting events`、`date-range` |
 | 衝突、共同空檔、方案檢查 | `meeting free-busy/slots/review` |
 | 房間候選與預約 | `meeting resources/rooms/book` |

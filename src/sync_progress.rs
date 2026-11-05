@@ -108,4 +108,16 @@ mod tests {
         assert_eq!(progress.state, "failed");
         assert_eq!(progress.count, 10);
     }
+
+    /// A child forked while the lock is held keeps a duplicate of the open file
+    /// description until it execs; dropping the lock must still release it.
+    #[test]
+    fn dropping_the_lock_releases_it_even_if_a_forked_copy_of_the_fd_lives() {
+        let temp = tempfile::tempdir().unwrap();
+        let lock = crate::sync::lock(temp.path()).unwrap();
+        let inherited = lock.try_clone_fd_for_test();
+        drop(lock);
+        crate::sync::lock(temp.path()).expect("explicit unlock must beat the lingering fd");
+        drop(inherited);
+    }
 }

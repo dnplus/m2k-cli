@@ -345,6 +345,19 @@ impl Store {
         self.list_with_projection(kind, query, collection, limit, ItemProjection::Summary)
     }
 
+    /// Full mail items dated at or after `since`; dates are stored as UTC RFC3339, so text order is time order.
+    pub fn mail_since(&self, since: DateTime<Utc>) -> Result<Vec<Item>> {
+        let sql = format!(
+            "SELECT {} FROM items WHERE kind = 'mail' AND date >= ?1 ORDER BY date DESC, id ASC",
+            ItemProjection::Full.select_fields()
+        );
+        let mut statement = self.conn.prepare(&sql)?;
+        let items = statement
+            .query_map(params![since.to_rfc3339()], decode_item)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(items)
+    }
+
     pub fn contact_page(
         &self,
         query: Option<&str>,

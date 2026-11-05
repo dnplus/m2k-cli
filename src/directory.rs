@@ -13,7 +13,6 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
-    fs::File,
     path::Path,
 };
 
@@ -41,6 +40,8 @@ pub enum DirectoryCommand {
     Search(SearchArgs),
     #[command(about = "以完整姓名或 email 唯一解析聯絡人")]
     Resolve(ResolveArgs),
+    #[command(about = "從本機快取確定性輸出部門組織圖與成員，給代理程式當脈絡；--json 為結構化")]
+    Chart(crate::directory_chart::ChartArgs),
 }
 
 #[derive(Debug, Args)]
@@ -202,6 +203,7 @@ pub fn execute(data_dir: &Path, command: DirectoryCommand, json: bool) -> Result
         DirectoryCommand::Resolve(args) => {
             execute_resolve(data_dir, args.query, args.online, args.addressbook, json)
         }
+        DirectoryCommand::Chart(args) => crate::directory_chart::execute(data_dir, args, json),
     }
 }
 
@@ -393,7 +395,7 @@ pub fn sync_contacts(data_dir: &Path, args: SyncArgs) -> Result<DirectorySyncRes
 pub(crate) fn sync_contacts_locked(
     data_dir: &Path,
     args: SyncArgs,
-    _lock: File,
+    _lock: sync::SyncLock,
 ) -> Result<DirectorySyncResult> {
     let mut progress = crate::sync_progress::Reporter::start(data_dir)?;
     progress.update("discovering", Some(Kind::Contacts), 0)?;
@@ -617,7 +619,7 @@ fn online(data_dir: &Path) -> Result<(Config, String)> {
     Ok((config, password))
 }
 
-fn local_store(data_dir: &Path) -> Result<Store> {
+pub(crate) fn local_store(data_dir: &Path) -> Result<Store> {
     let _lock = sync::lock(data_dir)?;
     let mut store = Store::open(data_dir)?;
     if data_dir.join("config.json").exists() {
@@ -953,7 +955,10 @@ fn search_contacts(
     Ok(contacts)
 }
 
-fn select_node<'a>(nodes: &'a [DirectoryNode], selector: &str) -> Result<&'a DirectoryNode> {
+pub(crate) fn select_node<'a>(
+    nodes: &'a [DirectoryNode],
+    selector: &str,
+) -> Result<&'a DirectoryNode> {
     let normalized = normalize_identifier(selector);
     let matches = nodes
         .iter()

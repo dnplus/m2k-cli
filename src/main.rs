@@ -140,6 +140,7 @@ fn execute(cli: Cli) -> Result<()> {
                     smtp_port,
                     caldav_url,
                     carddav_url,
+                    automated_senders,
                 } => {
                     let _lock = sync::lock(&dir)?;
                     if let Some(v) = sync_interval_minutes {
@@ -171,6 +172,13 @@ fn execute(cli: Cli) -> Result<()> {
                     }
                     if let Some(v) = carddav_url {
                         cfg.carddav_url = v;
+                    }
+                    if let Some(v) = automated_senders {
+                        cfg.automated_senders = v
+                            .iter()
+                            .map(|sender| sender.trim().to_lowercase())
+                            .filter(|sender| !sender.is_empty())
+                            .collect();
                     }
                     cfg.validate()?;
                     Store::open(&dir)?.ensure_account(&cfg)?;
@@ -541,6 +549,7 @@ fn mail_command(dir: &Path, cmd: MailCommand, json: bool) -> Result<()> {
     match cmd {
         MailCommand::Watch(args) => m2k::mail_webhook::run(dir, args)?,
         MailCommand::Workflow(command) => m2k::mail_workflow::execute(dir, command, json)?,
+        MailCommand::Graph(args) => m2k::mail_graph::execute(dir, args, json)?,
         MailCommand::Folders => emit(&checked_store(dir)?.collections(Kind::Mail)?, json)?,
         MailCommand::List(args) => list(dir, Kind::Mail, args, json)?,
         MailCommand::Search { query, limit } => list(

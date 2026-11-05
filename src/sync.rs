@@ -13,7 +13,28 @@ use std::{
     path::Path,
 };
 
-pub fn lock(data_dir: &Path) -> Result<File> {
+/// Held sync lock. `flock` belongs to the open file description, and a
+/// `fork` on another thread duplicates that description until the child
+/// `exec`s, so merely closing our fd could leave the lock held for a moment.
+/// Unlocking explicitly releases it for every copy.
+#[derive(Debug)]
+pub struct SyncLock(File);
+
+impl Drop for SyncLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
+    }
+}
+
+#[cfg(test)]
+impl SyncLock {
+    /// Stands in for the copy a concurrent `fork` leaves behind.
+    pub(crate) fn try_clone_fd_for_test(&self) -> File {
+        self.0.try_clone().unwrap()
+    }
+}
+
+pub fn lock(data_dir: &Path) -> Result<SyncLock> {
     std::fs::create_dir_all(data_dir)?;
     let file = OpenOptions::new()
         .create(true)
@@ -32,7 +53,7 @@ pub fn lock(data_dir: &Path) -> Result<File> {
             error.into()
         }
     })?;
-    Ok(file)
+    Ok(SyncLock(file))
 }
 
 pub fn run(data_dir: &Path, kinds: &[Kind]) -> Result<Vec<SyncResult>> {

@@ -216,7 +216,9 @@ fn index_follows_updates_deletes_snapshots_and_prune() {
     let now = Utc::now();
     let mut old = item(Kind::Mail, "old", "過期的專案通知", "");
     old.date = Some((now - Duration::days(400)).to_rfc3339());
-    let keep = item(Kind::Mail, "keep", "保留的專案通知", "");
+    // Dated relative to `now` so the fixture's fixed date can't age past retention.
+    let mut keep = item(Kind::Mail, "keep", "保留的專案通知", "");
+    keep.date = Some(now.to_rfc3339());
     let gone = item(Kind::Mail, "gone", "會被刪除的專案通知", "");
     store
         .apply_snapshot(&snapshot(Kind::Mail, vec![old, keep.clone(), gone]), now)

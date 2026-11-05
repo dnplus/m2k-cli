@@ -33,6 +33,9 @@ pub struct Config {
     /// always sets it; configs from older versions may lack it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site_profile: Option<String>,
+    /// 沒有自動信標頭的系統寄件者：完整地址、`@網域` 或 local part（不分大小寫）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub automated_senders: Vec<String>,
 }
 
 impl Config {
@@ -92,6 +95,7 @@ impl Config {
             calendar_retention_days: DEFAULT_CALENDAR_RETENTION_DAYS,
             contacts_retention_days: DEFAULT_CONTACTS_RETENTION_DAYS,
             site_profile: Some(site_profile),
+            automated_senders: Vec::new(),
         };
         config.validate()?;
         Ok(config)

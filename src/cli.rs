@@ -185,6 +185,13 @@ pub enum ConfigCommand {
         caldav_url: Option<String>,
         #[arg(long)]
         carddav_url: Option<String>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            num_args = 0..,
+            help = "mail graph 視為自動信的寄件者：完整地址、@網域或 local part，逗號分隔；取代整份名單，給空字串清空"
+        )]
+        automated_senders: Option<Vec<String>>,
     },
 }
 
@@ -218,6 +225,10 @@ pub enum MailCommand {
     Watch(m2k::mail_webhook::WatchArgs),
     #[command(flatten)]
     Workflow(m2k::mail_workflow::MailWorkflowCommand),
+    #[command(
+        about = "從本機近期郵件確定性整理人脈與信件串，輸出給代理程式當脈絡；--json 為結構化"
+    )]
+    Graph(m2k::mail_graph::GraphArgs),
     Folders,
     List(ListArgs),
     Search {
