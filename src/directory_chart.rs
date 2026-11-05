@@ -42,6 +42,8 @@ pub enum ChartFormat {
 pub struct OrgChart {
     /// 指定分支時為該分支 path。
     pub branch: Option<String>,
+    /// 成員 email 最常見的網域；Markdown 只另列不是「帳號@此網域」的 email。
+    pub email_domain: Option<String>,
     pub department_count: usize,
     /// 不重複的成員數；同一人可屬多個部門。
     pub member_count: usize,
@@ -60,11 +62,17 @@ pub struct Department {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Member {
+    /// vCard N 的全名（Mail2000 放中文姓名）；沒有時退回 FN。
     pub name: String,
+    /// vCard FN，在 Mail2000 等於 email 前綴；與 name 相同時省略。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nickname: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub phones: Vec<String>,
     pub emails: Vec<String>,
     #[serde(skip)]
     id: String,
@@ -122,15 +130,24 @@ pub fn build(
             if has_department && depth == 0 {
                 continue;
             }
+            let name = contact
+                .structured_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .unwrap_or(&contact.name)
+                .to_owned();
+            let differs = |value: &&String| {
+                !value.eq_ignore_ascii_case(&name) && !value.eq_ignore_ascii_case(&contact.name)
+            };
             members.entry(path).or_default().push(Member {
-                name: contact.name.clone(),
+                username: (!contact.name.eq_ignore_ascii_case(&name)).then(|| contact.name.clone()),
                 title: contact.title.clone(),
-                // 帳號名稱常與 FN 相同，重複時不列。
-                nickname: contact
-                    .nickname
-                    .clone()
-                    .filter(|nickname| !nickname.eq_ignore_ascii_case(&contact.name)),
+                // Mail2000 的 NICKNAME 與 FN 相同，重複時不列。
+                nickname: contact.nickname.as_ref().filter(differs).cloned(),
+                phones: contact.phones.clone(),
                 emails: contact.emails.clone(),
+                name,
                 id: contact.id.clone(),
             });
         }
@@ -177,8 +194,22 @@ pub fn build(
         stack.extend(&department.children);
     }
     let member_count = ids.len();
+    let mut domains = BTreeMap::<&str, usize>::new();
+    for member in members.values().flatten() {
+        for email in &member.emails {
+            if let Some((_, domain)) = email.split_once('@') {
+                *domains.entry(domain).or_default() += 1;
+            }
+        }
+    }
+    // 票數相同時取字典序較小者，結果與輸入順序無關。
+    let email_domain = domains
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)))
+        .map(|(domain, _)| domain.to_owned());
     Ok(OrgChart {
         branch: branch.map(|node| node.path.clone()),
+        email_domain,
         department_count,
         member_count,
         reporting_note: REPORTING_NOTE,
@@ -215,17 +246,27 @@ pub fn render_markdown(chart: &OrgChart) -> String {
         "- 部門 {} 個，成員 {} 位（同一人可屬多個部門）\n- 匯報線：{}\n",
         chart.department_count, chart.member_count, chart.reporting_note
     ));
+    if let Some(domain) = &chart.email_domain {
+        out.push_str(&format!(
+            "- Email：括號內帳號 @{domain}（沒有括號時為姓名欄位本身）；例外另列\n"
+        ));
+    }
     if chart.member_count == 0 {
         out.push_str("- 本機尚無聯絡人快取；先執行 `m2k directory sync --scope company`\n");
     }
     out.push('\n');
     for department in &chart.departments {
-        markdown_department(&mut out, department, 0);
+        markdown_department(&mut out, department, chart.email_domain.as_deref(), 0);
     }
     out
 }
 
-fn markdown_department(out: &mut String, department: &Department, level: usize) {
+fn markdown_department(
+    out: &mut String,
+    department: &Department,
+    domain: Option<&str>,
+    level: usize,
+) {
     let indent = "  ".repeat(level);
     out.push_str(&format!(
         "{indent}- **{}** `{}`（{} 人）\n",
@@ -235,17 +276,49 @@ fn markdown_department(out: &mut String, department: &Department, level: usize) 
     ));
     for member in &department.members {
         let mut line = member.name.clone();
+        if let Some(username) = &member.username {
+            line.push_str(&format!("（{username}）"));
+        }
         for value in member.title.iter().chain(&member.nickname) {
             line.push_str(&format!(" · {value}"));
         }
-        if !member.emails.is_empty() {
-            line.push_str(&format!(" · {}", member.emails.join(", ")));
+        if !member.phones.is_empty() {
+            line.push_str(&format!(" · {}", phone_label(&member.phones)));
+        }
+        let account = member.username.as_deref().unwrap_or(&member.name);
+        let unusual = member
+            .emails
+            .iter()
+            .filter(|email| {
+                domain.is_none_or(|domain| {
+                    !email.eq_ignore_ascii_case(&format!("{account}@{domain}"))
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !unusual.is_empty() {
+            line.push_str(&format!(" · {}", unusual.join(", ")));
         }
         out.push_str(&format!("{indent}  - {line}\n"));
     }
     for child in &department.children {
-        markdown_department(out, child, level + 1);
+        markdown_department(out, child, domain, level + 1);
     }
+}
+
+/// 6 位數以內的純數字是公司分機。
+fn phone_label(phones: &[String]) -> String {
+    phones
+        .iter()
+        .map(|phone| {
+            if phone.len() <= 6 && phone.chars().all(|c| c.is_ascii_digit()) {
+                format!("分機 {phone}")
+            } else {
+                format!("電話 {phone}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Mermaid 流程圖只畫部門與直屬人數；成員名單請用 Markdown 或 JSON。

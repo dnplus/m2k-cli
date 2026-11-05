@@ -9,8 +9,8 @@ Mail2000 的 Rust 原生 CLI 與 TUI。參考既有 Mail2000 連接器的工作�
 從 [Releases](https://github.com/dnplus/m2k-cli/releases) 下載對應平台的壓縮檔（Linux x86_64、macOS Apple Silicon／Intel、Windows x86_64），核對同名 `.sha256` 後解壓，把 `m2k`（Windows 為 `m2k.exe`）放到 PATH 裡：
 
 ```sh
-shasum -a 256 -c m2k-v0.4.0-aarch64-apple-darwin.tar.gz.sha256   # Linux 可用 sha256sum -c
-tar -xzf m2k-v0.4.0-aarch64-apple-darwin.tar.gz
+shasum -a 256 -c m2k-v0.4.1-aarch64-apple-darwin.tar.gz.sha256   # Linux 可用 sha256sum -c
+tar -xzf m2k-v0.4.1-aarch64-apple-darwin.tar.gz
 ```
 
 Windows 用 PowerShell 的 `Get-FileHash <檔名> -Algorithm SHA256` 比對。Linux 版在 Ubuntu 22.04 建置，執行時需要 `libdbus-1-3` 與 `libssl3`（大多數桌面發行版已內建）。macOS 版沒有經過 Apple 公證，用瀏覽器下載時若被 Gatekeeper 擋下，對解壓後的執行檔執行 `xattr -d com.apple.quarantine m2k-*/m2k` 後再開；用 `curl` 下載則不會被標記。推送 `vX.Y.Z` tag 時由 `.github/workflows/release.yml` 自動建置並發佈，tag 必須和 `Cargo.toml` 的版本一致。
@@ -259,7 +259,7 @@ m2k directory chart --format mermaid
 
 首次可明確執行 `--scope company` 初始化企業目錄，再使用部門／分支 refresh；若自己所屬部門尚未確認，使用 `--addressbook` 指定實際分支。
 
-`directory chart` 從本機快取確定性輸出部門組織圖，不連線、不呼叫模型，相同快取得到相同結果。預設為縮排 Markdown：每個部門列出直屬成員（姓名、職稱、帳號、email），方便直接當代理程式脈絡；`--json` 為巢狀結構，`--format mermaid` 只畫部門與直屬人數。最上層通訊錄是全公司名單，只列沒有部門歸屬的人；兼任多個部門的人在各部門都會列出，總人數只算一次。`--branch` 只輸出指定分支及其子部門，可填 path（前導 `/` 可省略）、名稱或 URL。Mail2000 的 vCard 沒有主管或匯報欄位，所以組織圖只呈現部門歸屬，不畫匯報線也不推估主管，輸出內會註明。需要先以 `directory sync --scope company` 同步聯絡人。
+`directory chart` 從本機快取確定性輸出部門組織圖，不連線、不呼叫模型，相同快取得到相同結果。預設為縮排 Markdown：每個部門列出直屬成員：全名取自 vCard `N`（Mail2000 的 `FN` 只是帳號），括號內為帳號，另列職稱、分機或電話；email 為「帳號@最常見網域」時不重複列出，例外才另列，`--json` 保留完整 `emails` 與 `username`，方便直接當代理程式脈絡；`--json` 為巢狀結構，`--format mermaid` 只畫部門與直屬人數。最上層通訊錄是全公司名單，只列沒有部門歸屬的人；兼任多個部門的人在各部門都會列出，總人數只算一次。`--branch` 只輸出指定分支及其子部門，可填 path（前導 `/` 可省略）、名稱或 URL。Mail2000 的 vCard 沒有主管或匯報欄位，所以組織圖只呈現部門歸屬，不畫匯報線也不推估主管，輸出內會註明。需要先以 `directory sync --scope company` 同步聯絡人。
 
 ## 會議與會議室
 

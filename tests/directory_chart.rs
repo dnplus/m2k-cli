@@ -216,3 +216,60 @@ fn cli_reads_only_the_local_cache() {
     assert_eq!(json["member_count"], 5);
     assert!(run(&["directory", "chart", "--format", "mermaid"]).starts_with("flowchart TD"));
 }
+
+/// Mail2000 的實際形狀：FN 與 NICKNAME 都是帳號，中文全名只在 N 的名字欄。
+fn mail2000_contact(id: &str, path: &str, uid: &str, full_name: &str, phone: &str) -> Item {
+    let mut item = contact(id, path, uid, uid, &format!("N:;{full_name};;;\n"));
+    if !phone.is_empty() {
+        item.phones = vec![phone.into()];
+    }
+    item
+}
+
+#[test]
+fn members_show_the_chinese_full_name_not_just_the_account() {
+    // 只有帳號時代理程式對不上信件裡的中文署名；全名在 vCard N，帳號仍要留著才能寄信。
+    let collections = ["ACME", "ACME/ENG"]
+        .into_iter()
+        .map(collection)
+        .collect::<Vec<_>>();
+    let mut other = mail2000_contact("3", "ACME/ENG", "lee", "李外包", "0912345678");
+    other.raw = other
+        .raw
+        .replace("EMAIL:lee@example.test", "EMAIL:lee@partner.test");
+    other.emails = vec!["lee@partner.test".into()];
+    let items = vec![
+        mail2000_contact("1", "ACME/ENG", "ming_wang", "王小明", "1234"),
+        mail2000_contact("2", "ACME/ENG", "nobody", "", ""),
+        other,
+    ];
+    let chart = chart(&collections, &items, None);
+    let eng = &chart.departments[0].children[0];
+    let ming = eng.members.iter().find(|m| m.name == "王小明").unwrap();
+    assert_eq!(ming.username.as_deref(), Some("ming_wang"));
+    assert_eq!(
+        ming.nickname, None,
+        "NICKNAME equal to the account is noise"
+    );
+    assert_eq!(ming.phones, ["1234"]);
+    let nobody = eng.members.iter().find(|m| m.name == "nobody").unwrap();
+    assert_eq!(
+        nobody.username, None,
+        "without N the account is the name, not repeated"
+    );
+    assert_eq!(chart.email_domain.as_deref(), Some("example.test"));
+
+    let markdown = render_markdown(&chart);
+    assert!(markdown.contains("- Email：括號內帳號 @example.test"));
+    assert!(
+        markdown.contains("  - 王小明（ming_wang） · 分機 1234\n"),
+        "{markdown}"
+    );
+    assert!(markdown.contains("  - nobody\n"), "{markdown}");
+    // 網域不同的 email 推不出來，必須照列。
+    assert!(
+        markdown.contains("  - 李外包（lee） · 電話 0912345678 · lee@partner.test\n"),
+        "{markdown}"
+    );
+    assert!(!markdown.contains("ming_wang@example.test"));
+}
