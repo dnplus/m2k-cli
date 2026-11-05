@@ -6,7 +6,7 @@ use m2k::{
 
 fn config() -> Config {
     let mut config = Config::new("user@example.test".into(), "mail.example.test").unwrap();
-    config.imap_port = 0; // Fail immediately if a test unexpectedly opens a connection.
+    config.imap_port = 0;
     config
 }
 

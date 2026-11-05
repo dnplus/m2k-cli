@@ -7,12 +7,8 @@ use serde_json::Value;
 use std::path::Path;
 use tempfile::TempDir;
 
-// A keychain file that does not exist: m2k must never read or write the
-// login keychain from tests.
 const NO_KEYCHAIN: &str = "/nonexistent/m2k-test.keychain-db";
 
-/// Rooms are listed from the profile without credentials: the `.demo` marker
-/// makes `meeting resources` skip the password, so no request leaves the test.
 fn offline_resources(config: &Config, extra: &[&str]) -> Value {
     let dir = TempDir::new().unwrap();
     config::save(dir.path(), config).unwrap();
@@ -78,13 +74,10 @@ fn resource_names(data_dir: &Path, extra: &[&str]) -> Vec<String> {
         .collect()
 }
 
-// Read config.json directly: user profile names resolve against the data dir
-// the binary was started with, which this test process does not set.
 fn saved_config(data_dir: &Path) -> Value {
     serde_json::from_slice(&std::fs::read(data_dir.join("config.json")).unwrap()).unwrap()
 }
 
-/// A config.json as versions before `init` recorded the profile wrote it.
 fn write_legacy_config(data_dir: &Path, site_profile: Option<&str>) {
     let mut config = serde_json::json!({
         "username": "alice",
@@ -112,12 +105,8 @@ fn write_legacy_config(data_dir: &Path, site_profile: Option<&str>) {
     }
 }
 
-// Site-specific profiles (with real room access names) are not compiled in.
-// An existing install keeps working once its profile file is copied to
-// `<data-dir>/site-profiles/<name>.json`: configs that name the profile and
-// configs that relied on server auto-selection both resolve to it unchanged.
 #[test]
-fn user_profile_in_data_dir_keeps_existing_configs_working() {
+fn user_profile_in_data_dir_is_selected_by_name() {
     let example = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/examples/site-profile.example.json"
@@ -149,16 +138,6 @@ fn user_profile_in_data_dir_keeps_existing_configs_working() {
         "the stored name is kept, not rewritten to a path"
     );
 
-    // Configs from older versions have no site_profile: auto-selected by
-    // server from the user dir.
-    let auto = TempDir::new().unwrap();
-    install_user_profile(auto.path(), "example");
-    write_legacy_config(auto.path(), None);
-    std::fs::write(auto.path().join(".demo"), "offline profile test\n").unwrap();
-    assert_eq!(resource_names(auto.path(), &[]), all);
-
-    // New inits record what auto-selection picked, so the choice is visible
-    // and no longer depends on the server name later.
     let recorded = TempDir::new().unwrap();
     install_user_profile(recorded.path(), "example");
     m2k(recorded.path())
@@ -173,7 +152,6 @@ fn user_profile_in_data_dir_keeps_existing_configs_working() {
         .success();
     assert_eq!(saved_config(generic.path())["site_profile"], "mail2000");
 
-    // `--site-profile NAME` stores the name so the file can be updated in place.
     let by_name = TempDir::new().unwrap();
     install_user_profile(by_name.path(), "example");
     m2k(by_name.path())
@@ -200,8 +178,6 @@ fn missing_user_profile_names_the_expected_location() {
     assert!(text.contains("site-profiles"), "{text}");
     assert!(!dir.path().join("config.json").exists());
 
-    // An upgraded install whose profile file was not copied yet must not
-    // silently list zero rooms.
     install_user_profile(dir.path(), "gone");
     m2k(dir.path())
         .args(["init", "--username", "alice", "--site-profile", "gone"])
@@ -220,8 +196,6 @@ fn missing_user_profile_names_the_expected_location() {
     assert!(text.contains("找不到 site profile：gone"), "{text}");
 }
 
-// Another Mail2000 installation only needs a profile file: every endpoint and
-// room URL is derived from it and from the account, never from another site's defaults.
 #[test]
 fn fictional_site_profile_drives_every_endpoint() {
     let dir = TempDir::new().unwrap();
@@ -384,61 +358,16 @@ fn invalid_profile_is_rejected_when_config_is_loaded() {
     );
 }
 
-/// Doctor's JSON report; other checks (no database yet) may fail, so the exit
-/// code is not asserted here.
 fn doctor_report(data_dir: &Path) -> Value {
     let output = m2k(data_dir).arg("doctor").output().unwrap();
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-// The upgrade trap: a legacy config with no site_profile and no profile file
-// falls back to the generic profile. That must be visible in doctor and in
-// room listings instead of an empty, successful answer.
 #[test]
-fn legacy_config_without_profile_file_warns_with_migration_steps() {
+fn doctor_reports_the_configured_profile_as_pass() {
     let dir = TempDir::new().unwrap();
-    write_legacy_config(dir.path(), None);
-    std::fs::write(dir.path().join(".demo"), "offline profile test\n").unwrap();
-
-    let output = m2k(dir.path())
-        .args(["meeting", "resources"])
-        .assert()
-        .success()
-        .get_output()
-        .clone();
-    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["resources"].as_array().unwrap().len(), 0);
-    let warning = value["warnings"][0].as_str().unwrap();
-    assert!(warning.contains("site-profiles"), "{warning}");
-    assert!(warning.contains("從內建站台 profile 遷移"), "{warning}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("警告：") && stderr.contains("site-profiles"),
-        "{stderr}"
-    );
-
-    let report = doctor_report(dir.path());
-    let check = report["checks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|check| check["name"] == "site_profile")
-        .unwrap();
-    assert_eq!(check["status"], "warn");
-    assert!(check["detail"].as_str().unwrap().contains("site-profiles"));
-
-    // Once the profile file is in place both warnings disappear.
     install_user_profile(dir.path(), "example");
-    let value: Value = serde_json::from_slice(
-        &m2k(dir.path())
-            .args(["meeting", "resources"])
-            .assert()
-            .success()
-            .get_output()
-            .stdout,
-    )
-    .unwrap();
-    assert!(value.get("warnings").is_none(), "{value}");
+    write_legacy_config(dir.path(), Some("example"));
     let report = doctor_report(dir.path());
     let check = report["checks"]
         .as_array()
@@ -450,8 +379,6 @@ fn legacy_config_without_profile_file_warns_with_migration_steps() {
     assert!(check["detail"].as_str().unwrap().starts_with("example"));
 }
 
-// A bare name only ever means a user profile: a same-named file in the
-// working directory must not be picked up silently.
 #[test]
 fn bare_name_never_reads_the_working_directory() {
     let dir = TempDir::new().unwrap();
@@ -497,8 +424,6 @@ fn user_profile_shadowed_by_builtin_warns() {
     assert!(stderr.contains("與內建 site profile 同名"), "{stderr}");
 }
 
-// Without set_data_dir (library use, tests) only M2K_SITE_PROFILE_DIR can
-// expose user profiles, so tests never read the real data directory.
 #[test]
 fn library_callers_see_user_profiles_only_through_the_override() {
     if std::env::var_os("M2K_SITE_PROFILE_DIR").is_none() {

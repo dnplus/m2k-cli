@@ -1,5 +1,3 @@
-//! 唯讀環境診斷：回答「這台機器、這個帳號能不能開始正式驗收」。
-//!
 //! 只做讀取：不建立檔案或目錄、不寄信、不改旗標、不寫行事曆，
 //! 錯誤訊息一律先遮蔽密碼。
 
@@ -155,7 +153,7 @@ pub fn run(dir: &Path) -> Report {
                 checks.push(skip(name, "設定檔不可用，無法檢查"));
             }
         }
-        (Some(cfg), false) => online(dir, cfg, &mut checks),
+        (Some(cfg), false) => online(cfg, &mut checks),
     }
     checks.push(check("database", database(dir)));
     checks.push(check("sync_lock", sync_lock(dir)));
@@ -218,9 +216,9 @@ fn config_file(dir: &Path) -> Result<(String, Config)> {
     ))
 }
 
-fn online(dir: &Path, cfg: &Config, checks: &mut Vec<Check>) {
+fn online(cfg: &Config, checks: &mut Vec<Check>) {
     let from_env = std::env::var_os("M2K_PASSWORD").is_some_and(|value| !value.is_empty());
-    let password = config::read_password(dir, cfg);
+    let password = config::password(cfg);
     checks.push(check(
         "credentials",
         match &password {
@@ -285,7 +283,6 @@ fn dav(cfg: &Config, password: &str, kind: Kind, url: &str) -> Result<String> {
     ))
 }
 
-/// Informational only: a server without RFC 6578 keeps the ETag strategy.
 fn calendar_sync_token(cfg: &Config, password: &str) -> String {
     match provider::dav::probe_calendar_sync_tokens(cfg, password) {
         Ok((supported, total)) if supported == total && total > 0 => {
@@ -305,17 +302,9 @@ fn site_profile(cfg: &Config) -> Check {
     };
     let source = match &cfg.site_profile {
         Some(spec) => format!("config 指定 {spec}"),
-        None => format!("依伺服器 {} 自動選用", cfg.imap_host),
+        None => "config 未指定".to_owned(),
     };
-    let detail = format!("{}（{source}）", profile.name);
-    if profile.is_generic() && crate::site::user_profiles_missing() {
-        return Check {
-            name: "site_profile",
-            status: Status::Warn,
-            detail: format!("{detail}；{}", crate::site::migration_hint()),
-        };
-    }
-    check("site_profile", Ok(detail))
+    check("site_profile", Ok(format!("{}（{source}）", profile.name)))
 }
 
 fn database(dir: &Path) -> Result<String> {

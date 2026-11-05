@@ -1,7 +1,3 @@
-//! RFC 6578 sync-token support: what the DAV layer sends and how it turns a
-//! sync-collection delta into a whole-collection snapshot. The policy that
-//! picks token vs. ETag sync is covered end to end in `fixture_sync_token.rs`.
-
 use m2k::{
     config::Config,
     model::{Item, Kind},
@@ -210,7 +206,6 @@ fn delta_adds_changes_and_deletes_while_untouched_cache_survives_without_request
         cached(&cfg, "edited", "\"e1\""),
         cached(&cfg, "same", "\"s1\""),
         cached(&cfg, "removed", "\"r1\""),
-        // Far from any near window and not in the delta: must stay cached.
         cached(&cfg, "distant", "\"d1\""),
     ];
     let CalendarChanges::Synced(sync) = changes(&cfg, &existing) else {
@@ -298,7 +293,6 @@ fn untrustworthy_sync_collection_answers_fall_back_instead_of_failing_every_tick
             .to_owned();
     let outside = "<D:response><D:href>/other/x.ics</D:href><D:status>HTTP/1.1 404 Not Found</D:status></D:response>".to_owned();
     for reply in [
-        // A plain 403/409 without valid-sync-token is not proof the token expired.
         status("403 Forbidden", ""),
         status("409 Conflict", ""),
         status("500 Internal Server Error", ""),
@@ -327,7 +321,6 @@ fn authentication_and_connection_failures_stay_errors() {
     let cfg = config(address);
     assert!(dav::sync_calendar_changes(&cfg, "test-password", &[], &tokens(&cfg)).is_err());
     worker.join().unwrap();
-    // A broken HTTP response is a transport error, not a server answer.
     let (address, worker) = server(vec![discovery(), status("garbage", "")]);
     let cfg = config(address);
     assert!(dav::sync_calendar_changes(&cfg, "test-password", &[], &tokens(&cfg)).is_err());
@@ -380,13 +373,11 @@ fn full_sync_records_a_token_only_when_sync_collection_is_advertised() {
             )),
             Some(NEW_TOKEN),
         ),
-        // A token without sync-collection in supported-report-set is unusable.
         (
             probe(&format!("<D:sync-token>{NEW_TOKEN}</D:sync-token>")),
             None,
         ),
         (probe(SUPPORTED), None),
-        // Probe failures must not fail the sync.
         (status("400 Bad Request", ""), None),
         (status("207 Multi-Status", "not xml"), None),
     ];

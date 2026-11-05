@@ -29,7 +29,6 @@ fn args() -> GraphArgs {
     }
 }
 
-/// `headers` 以 CRLF 串成原始郵件，正文另放 `text`（同步後快取的形狀）。
 fn mail(id: &str, folder: &str, hours_ago: i64, headers: &[&str], text: &str) -> Item {
     let subject = headers
         .iter()
@@ -74,7 +73,6 @@ fn conversation() -> Vec<Item> {
             ],
             "請確認附件報價。",
         ),
-        // 主旨改了，但 References 仍指回原信，必須算同一串。
         mail(
             "a2",
             "Sent",
@@ -90,7 +88,6 @@ fn conversation() -> Vec<Item> {
             ],
             "已修正，請再看一次。\n\nOn Tue, Alice <alice@example.test> wrote:\n> 請確認附件報價。",
         ),
-        // 同一封寄件也被抄送回收件匣，不能重複計數。
         mail(
             "a2-copy",
             "INBOX",
@@ -129,7 +126,6 @@ fn conversation() -> Vec<Item> {
             ],
             "本週五停電。",
         ),
-        // 視窗外：不應出現在任何統計裡。
         mail(
             "old",
             "INBOX",
@@ -163,7 +159,6 @@ fn replies_with_changed_subject_join_their_thread_and_duplicate_copies_count_onc
         quote.participants,
         ["alice@example.test", "bob@example.test"]
     );
-    // 最後一封是我寄的，球在對方。
     assert_eq!(quote.status, ThreadStatus::AwaitingThem);
     assert_eq!(
         quote.latest_excerpt, "已修正，請再看一次。",
@@ -190,7 +185,6 @@ fn status_tells_the_agent_who_owes_the_next_reply() {
         "cc-only mail is not a request"
     );
 
-    // 已標記 \Answered 但回覆不在快取：不能再說待我回覆。
     items
         .iter_mut()
         .find(|item| item.id == "c1")
@@ -331,7 +325,6 @@ fn latest_status(item: Item) -> ThreadStatus {
 
 #[test]
 fn automated_mail_addressed_to_me_is_fyi_not_a_reply_request() {
-    // 系統通知直接寄給我，但沒有人在等回覆；算成待回只會淹沒真正要處理的信。
     for header in [
         "Auto-Submitted: auto-generated",
         "Precedence: bulk",
@@ -376,7 +369,6 @@ fn automated_mail_addressed_to_me_is_fyi_not_a_reply_request() {
 
 #[test]
 fn people_who_merely_look_automated_by_name_are_still_people() {
-    // 「Auto-Submitted: no」是明確的人工信；姓氏結尾 bot 的人也不是機器人。
     for (sender, header) in [
         ("j.talbot@example.test", "X-Note: none"),
         ("alice@example.test", "Auto-Submitted: no"),
@@ -435,7 +427,6 @@ fn automated_senders_rank_after_humans_even_when_louder() {
 
 #[test]
 fn configured_senders_without_automation_headers_are_treated_as_automated() {
-    // 內部系統常不帶任何自動信標頭，只能靠使用者自己列名單。
     let item = |id: &str, sender: &str| {
         mail(
             id,

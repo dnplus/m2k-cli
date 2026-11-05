@@ -1,5 +1,3 @@
-//! TUI 行事曆事件的新增／編輯／刪除狀態機：不碰終端或網路，寫入由 `App` 依 `Action` 執行。
-
 use crate::{
     calendar_event::{self, EventFields, EventInput, When},
     model::Item,
@@ -21,9 +19,7 @@ pub enum Mode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     Editing,
-    /// 顯示將寫入的內容，等使用者按 y。
     Confirm,
-    /// 背景寫入中，忽略按鍵。
     Writing,
     /// 遠端已接受但本機未確認：只能關閉並重新同步，不可再送一次。
     Accepted,
@@ -49,7 +45,6 @@ pub struct EventForm {
     pub notice: Option<String>,
     /// 確認後要 PUT 的 ICS；刪除時為 `None`。
     pub raw: Option<String>,
-    /// 曾寫入失敗（非遠端已接受）；關閉時保留輸入，更新後再開可帶回。
     failed: bool,
     /// 起迄無法可靠解析時的原因；開始、結束、全天三欄唯讀，其他欄位照常可改。
     pub time_locked: Option<String>,
@@ -86,12 +81,10 @@ impl EventForm {
         }
     }
 
-    /// 目前欄位是否因時間鎖定而唯讀。
     pub fn locked(&self, index: usize) -> bool {
         self.time_locked.is_some() && matches!(index, 1 | 2 | ALL_DAY)
     }
 
-    /// 欄位是否和開啟時不同。
     pub fn dirty(&self) -> bool {
         self.mode != Mode::Delete
             && (self.fields != self.initial.0 || self.all_day != self.initial.1)
@@ -121,7 +114,6 @@ impl EventForm {
         self.notice = Some("已帶回上次未寫入的輸入；欄位比對以伺服器最新版本為準".into());
     }
 
-    /// Ctrl-C 離開前保存的草稿文字。
     pub fn draft_text(&self) -> String {
         let mut text = String::new();
         if let Some(item) = &self.base {
@@ -187,7 +179,6 @@ impl EventForm {
             || self.fields[2] != self.initial.0[2];
         EventInput {
             title: field(0),
-            // 改了起迄任一或全天時，兩者一起送出，讓畫面上的值就是寫入的值。
             start: times_changed.then(|| self.fields[1].clone()),
             end: times_changed.then(|| self.fields[2].clone()),
             location: field(3),

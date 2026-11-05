@@ -168,7 +168,6 @@ impl Delivery {
                 .header("X-M2K-Event-ID", &id)
                 .body(payload.clone());
             if let Some(secret) = &self.secret {
-                // 每次嘗試以當下時間重新簽章；body 與 event_id 維持不變。
                 let timestamp = Utc::now().timestamp();
                 request = request
                     .header("X-M2K-Timestamp", timestamp.to_string())
@@ -261,7 +260,7 @@ pub fn run(dir: &Path, args: WatchArgs) -> Result<()> {
     let mut failures = 0;
     while !stop.load(Ordering::Relaxed) {
         let receipt = delivery.drain(&mut store, &subscription, &stop)?;
-        let password = config::password(dir, &cfg)?;
+        let password = config::password(&cfg)?;
         let cycle = (|| -> Result<_> {
             if watcher.is_none() {
                 watcher = Some(Watcher::connect(&cfg, &password, &stop)?);
@@ -370,7 +369,6 @@ mod tests {
 
     #[test]
     fn signature_matches_fixed_vector() {
-        // 以 openssl 獨立計算：printf '1700000000.{"a":1}' | openssl dgst -sha256 -hmac key
         assert_eq!(
             sign(b"key", 1_700_000_000, br#"{"a":1}"#),
             "a438e398bfafc57e4396bb7fc2304422f0f768e965d073ca313cb52e22e6ad03"

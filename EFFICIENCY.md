@@ -52,7 +52,7 @@ python3 scripts/benchmark_queries.py \
 
 ## 流程驗證
 
-`cargo test --offline --locked`：99 passed、0 failed、0 ignored。Clippy（warnings 視為錯誤）及 release build 通過。測試包含原生 CLI process 與 loopback HTTP fixture。
+`cargo test --offline --locked`（2026-10-07 當時）：99 passed、0 failed、0 ignored。Clippy（warnings 視為錯誤）及 release build 通過。測試包含原生 CLI process 與 loopback HTTP fixture。
 
 | HTTP fixture 情境 | 實際請求數與結果 |
 | --- | --- |

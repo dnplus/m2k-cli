@@ -626,8 +626,7 @@ fn online(data_dir: &Path) -> Result<(Config, String)> {
     let config = config::load(data_dir)?;
     let mut store = Store::open(data_dir)?;
     store.ensure_account(&config)?;
-    let password =
-        config::password(data_dir, &config).map_err(|error| sanitize_error(error, ""))?;
+    let password = config::password(&config).map_err(|error| sanitize_error(error, ""))?;
     Ok((config, password))
 }
 
@@ -799,12 +798,6 @@ fn discover_self_targets_with_session<'a>(
     }
     if nodes.len() == 1 {
         return Ok((nodes, session));
-    }
-    if profile.is_generic() {
-        bail!(
-            "無法安全判定 self 的根通訊錄；請使用 --addressbook 指定分支。{}",
-            crate::site::migration_hint()
-        )
     }
     bail!("無法安全判定 self 的根通訊錄；請使用 --addressbook 指定分支")
 }
@@ -1269,7 +1262,6 @@ pub fn department_from_memberships(memberships: &[DirectoryMembership]) -> Optio
         if segments.is_empty() {
             continue;
         }
-        // The top-level address book is the directory root (the company), not a department.
         if segments.len() == 1 {
             continue;
         }

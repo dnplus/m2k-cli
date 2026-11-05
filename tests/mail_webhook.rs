@@ -186,10 +186,10 @@ fn webhook_failure_survives_restart_and_retries_identical_event_until_success() 
     retention.mail_retention_days = 1;
     assert_eq!(
         store
-            .prune_kind(
+            .prune_kinds(
                 &retention,
                 Utc::now() + chrono::Duration::days(2),
-                Kind::Mail
+                &[Kind::Mail]
             )
             .unwrap(),
         1
@@ -510,7 +510,6 @@ fn header_value(header: &str, name: &str) -> Option<String> {
     })
 }
 
-/// 接收端獨立的驗證實作：與 README 範例相同的演算法。
 fn receiver_verifies(secret: &[u8], header: &str, body: &[u8]) -> i64 {
     use hmac::{Hmac, Mac};
     let timestamp: i64 = header_value(header, "x-m2k-timestamp")
@@ -544,7 +543,6 @@ fn signed_delivery_verifies_and_resigns_on_retry_with_same_body_and_event_id() {
         .unwrap();
     assert_eq!(receipt["error"]["code"], "webhook_delivery_failed");
     let event_id = receipt["error"]["event_id"].as_str().unwrap().to_string();
-    // 時間戳以秒計：等到下一秒，才能證明重送使用重送當下的時間。
     thread::sleep(std::time::Duration::from_millis(1100));
     store
         .mail_webhook_failed(
@@ -578,7 +576,6 @@ fn signed_delivery_verifies_and_resigns_on_retry_with_same_body_and_event_id() {
         assert!(!header.contains(SECRET));
         assert!(!String::from_utf8_lossy(body).contains(SECRET));
     }
-    // secret 不進 SQLite、狀態輸出或錯誤訊息。
     let status = store.mail_webhook_status().unwrap().to_string();
     assert!(!status.contains(SECRET));
     for entry in std::fs::read_dir(dir.path()).unwrap() {

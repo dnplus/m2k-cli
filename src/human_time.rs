@@ -1,5 +1,3 @@
-//! 台北時間的人話日期時刻解析；會議室表單與行事曆事件共用。
-
 use anyhow::{Context, Result};
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, TimeZone, Utc};
 use chrono_tz::Asia::Taipei;

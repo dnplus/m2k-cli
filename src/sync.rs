@@ -28,7 +28,6 @@ impl Drop for SyncLock {
 
 #[cfg(test)]
 impl SyncLock {
-    /// Stands in for the copy a concurrent `fork` leaves behind.
     pub(crate) fn try_clone_fd_for_test(&self) -> File {
         self.0.try_clone().unwrap()
     }
@@ -130,28 +129,19 @@ fn merge_calendar_window(
 struct CalendarOutcome {
     response: Result<Snapshot>,
     full: bool,
-    /// The near window was checked with ETags (window or full sync).
     window_checked: bool,
     sync_tokens: Option<BTreeMap<String, String>>,
 }
 
-/// A sync-collection delta is only trusted between near-window ETag checks,
-/// so a server that silently answers empty deltas delays near changes by at
-/// most this long (plus one interval) instead of until the 24h full sync.
+const WINDOW_CHECK_INTERVAL: Duration = Duration::hours(1);
+
 fn needs_window_check(last_success: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
     match last_success {
-        Some(last) if last <= now => now.signed_duration_since(last) >= Duration::hours(1),
+        Some(last) if last <= now => now.signed_duration_since(last) >= WINDOW_CHECK_INTERVAL,
         _ => true,
     }
 }
 
-/// Picks the calendar strategy: a full retention sync (which also refreshes
-/// RFC 6578 sync-tokens); a sync-collection delta when every collection has a
-/// stored token and the near window was ETag-checked within the last hour;
-/// or the near-window ETag refresh otherwise. A token rejected with
-/// `valid-sync-token` is cleared and replaced by one full sync in the same
-/// run; any other untrustworthy sync-collection answer clears the tokens and
-/// falls back to the near window in the same run.
 fn sync_calendar(
     store: &mut Store,
     cfg: &Config,
@@ -282,7 +272,7 @@ fn run_with_policy(
             bail!("展示資料不連線；請在另一個資料目錄執行 m2k init");
         }
         let cfg = config::load(data_dir)?;
-        let password = config::password(data_dir, &cfg)?;
+        let password = config::password(&cfg)?;
         let mut store = Store::open(data_dir)?;
         store.ensure_account(&cfg)?;
         let mut results = Vec::new();
@@ -352,7 +342,7 @@ pub fn refresh_calendar(data_dir: &Path, center: DateTime<Utc>) -> Result<Vec<Sy
             bail!("展示資料不連線；請在另一個資料目錄執行 m2k init");
         }
         let cfg = config::load(data_dir)?;
-        let password = config::password(data_dir, &cfg)?;
+        let password = config::password(&cfg)?;
         let mut store = Store::open(data_dir)?;
         store.ensure_account(&cfg)?;
         let existing = store.list(Kind::Calendar, None, None, usize::MAX)?;

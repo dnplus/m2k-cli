@@ -10,8 +10,6 @@ use serde_json::Value;
 use tempfile::TempDir;
 use unicode_width::UnicodeWidthStr;
 
-// A keychain file that does not exist: m2k must never read or write the
-// login keychain from tests.
 const NO_KEYCHAIN: &str = "/nonexistent/m2k-test.keychain-db";
 
 fn command(dir: &TempDir) -> Command {

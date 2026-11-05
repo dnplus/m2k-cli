@@ -46,14 +46,11 @@ impl ErrorOutput {
             serde_json::to_value(Self::from_error(error)).expect("serializable error detail");
         if let Some(doctor) = error.downcast_ref::<crate::doctor::DoctorFailed>() {
             let report = serde_json::to_value(&doctor.0).expect("serializable doctor report");
-            // 與成功時同一組頂層欄位（checks、version、build_commit…），
-            // `state` 維持 "error"；`report` 保留給既有的解析腳本。
             for (key, value) in report.as_object().expect("report is an object") {
                 if key != "state" {
                     output[key] = value.clone();
                 }
             }
-            output["report"] = report;
         }
         if let Some(partial) = error.downcast_ref::<PartialSync>() {
             output["state"] = "partial".into();

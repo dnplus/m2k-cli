@@ -1,7 +1,3 @@
-//! Drives the real m2k binary against the loopback fixture server in
-//! examples/m2k_fixture, so the online paths (TLS IMAP/SMTP, DAV sync,
-//! booking PUTs) are exercised end to end, not just their parsers.
-
 #[path = "../examples/m2k_fixture/fixture.rs"]
 mod fixture;
 
@@ -83,8 +79,6 @@ fn real_binary_syncs_sends_and_books_against_loopback_fixture() {
         ],
     );
 
-    // The test root is an extra anchor, not a verification bypass: without it
-    // the self-signed fixture must be rejected.
     let (success, _) = m2k(&data, &info, false, &["auth", "check"]);
     assert!(!success, "untrusted fixture certificate must fail TLS");
 
@@ -284,7 +278,6 @@ fn mail_reply_keeps_error_codes_and_check_order_and_replies_in_thread() {
     let id = list[0]["id"].as_str().expect("mail id").to_owned();
     let body = info.mail_body.to_string_lossy().into_owned();
 
-    // 附件不存在：錯誤型別（not_found）不可被重新包裝成 operation_failed。
     let (success, error) = m2k(
         &data,
         &info,
@@ -303,7 +296,6 @@ fn mail_reply_keeps_error_codes_and_check_order_and_replies_in_thread() {
     assert_eq!(error["error"]["code"], "not_found", "{error}");
     assert!(events(&info, "smtp.message").is_empty());
 
-    // 找不到郵件優先於讀正文（正文檔不存在也一樣回 not_found，且不讀 stdin）。
     let (success, error) = m2k(
         &data,
         &info,
@@ -340,9 +332,6 @@ fn index_segments(data_dir: &Path) -> Vec<(i64, Vec<u8>)> {
 
 #[test]
 fn unchanged_mail_resync_leaves_the_search_index_byte_identical() {
-    // IMAP SINCE matches whole days, so the server keeps returning mail on the
-    // retention boundary day that pruning deletes right after the sync. On a
-    // real mailbox that rewrote ~29 index rows on every unchanged sync.
     let root = tempfile::tempdir().expect("tempdir");
     let info = fixture::start(fixture::Options {
         data_dir: root.path().join("fixture"),
@@ -362,8 +351,6 @@ fn unchanged_mail_resync_leaves_the_search_index_byte_identical() {
         &info,
         &["init", "--username", &info.user, "--server", &info.server],
     );
-    // The fixture's "午餐訂購" is exactly two days old: inside SINCE's
-    // day window, a few seconds past the two-day cutoff.
     ok(
         &data,
         &info,

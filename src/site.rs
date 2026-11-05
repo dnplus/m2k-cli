@@ -1,11 +1,3 @@
-//! Site profiles: everything that differs between Mail2000 installations.
-//!
-//! A profile is selected by `Config::site_profile`: a builtin name, the name of
-//! a user profile at `<data-dir>/site-profiles/<name>.json`, or a path to a
-//! JSON file. `init` always records the selected name. Configs written before
-//! that have none: the builtin or user profile whose `server` equals the
-//! configured IMAP host is used, falling back to the generic Mail2000 profile.
-
 use crate::config::Config;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -24,8 +16,6 @@ const BUILTIN_PROFILES: &[(&str, &str)] = &[
 
 static USER_PROFILES: OnceLock<PathBuf> = OnceLock::new();
 
-/// Use `<data_dir>/site-profiles` for user profiles; the binary calls this
-/// once at startup.
 pub fn set_data_dir(data_dir: &Path) {
     let _ = USER_PROFILES.set(data_dir.join(USER_PROFILE_DIR));
 }
@@ -46,7 +36,6 @@ fn user_profile_dir_text() -> String {
         .unwrap_or_else(|| format!("<data-dir>/{USER_PROFILE_DIR}"))
 }
 
-/// A bare profile name (no path or extension) names a user profile file.
 fn is_profile_name(spec: &str) -> bool {
     !spec.is_empty()
         && spec
@@ -56,20 +45,6 @@ fn is_profile_name(spec: &str) -> bool {
 
 fn user_profile_path(name: &str) -> Option<PathBuf> {
     user_profile_dir().map(|dir| dir.join(format!("{name}.json")))
-}
-
-/// True when no user profile file exists, as right after upgrading from a
-/// version that compiled the site profile in.
-pub fn user_profiles_missing() -> bool {
-    SiteProfile::user_profile_files().is_empty()
-}
-
-/// How to restore a site profile that older versions compiled in.
-pub fn migration_hint() -> String {
-    format!(
-        "目前使用通用 {DEFAULT_PROFILE} profile，沒有會議室清單與公司通訊錄根。若升級前依賴內建的站台 profile，請把舊版的 src/site/<name>.json 複製到 {}/<name>.json（例如 git show <舊版 commit>:src/site/<name>.json），詳見 README「從內建站台 profile 遷移」",
-        user_profile_dir_text()
-    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -207,14 +182,10 @@ impl SiteProfile {
         Ok(profile)
     }
 
-    /// The builtin or user profile whose server is `host`, otherwise the
-    /// generic profile. Unreadable or invalid user profiles are skipped here;
-    /// selecting one by name reports its error.
-    pub fn for_host(host: &str) -> Self {
-        Self::named_for_host(host).1
-    }
-
-    /// Like `for_host`, with the name that selects it in `site_profile`.
+    /// The builtin or user profile whose server is `host`, with the name that
+    /// selects it in `site_profile`, otherwise the generic profile. Unreadable
+    /// or invalid user profiles are skipped here; selecting one by name reports
+    /// its error.
     pub fn named_for_host(host: &str) -> (String, Self) {
         BUILTIN_PROFILES
             .iter()
@@ -233,7 +204,7 @@ impl SiteProfile {
         match config {
             Some(config) => match config.site_profile.as_deref() {
                 Some(spec) => Self::load(spec),
-                None => Ok(Self::for_host(&config.imap_host)),
+                None => Ok(Self::generic()),
             },
             None => Ok(Self::generic()),
         }
@@ -253,7 +224,6 @@ impl SiteProfile {
         paths
     }
 
-    /// Valid user profiles with the name (file stem) that selects them.
     fn user_profiles() -> Vec<(String, Self)> {
         Self::user_profile_files()
             .iter()

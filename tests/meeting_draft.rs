@@ -5,8 +5,6 @@ use m2k::{
 };
 use std::{fs, process::Command};
 
-// A keychain file that does not exist: m2k must never read or write the
-// login keychain from tests.
 const NO_KEYCHAIN: &str = "/nonexistent/m2k-test.keychain-db";
 
 fn fixture(dir: &std::path::Path, username: &str) -> (MeetingRoom, TimeRange) {

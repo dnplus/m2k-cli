@@ -1,6 +1,3 @@
-//! 郵件關係圖：從本機快取的近期郵件，確定性地整理人脈與信件串，作為代理程式的參考脈絡。
-//! 不呼叫模型、不連線；相同快取與相同時間點必得相同輸出。
-
 use crate::{
     config, mail_read, mail_workflow::normalize_thread_subject, model::Item, provider, store::Store,
 };
@@ -91,16 +88,13 @@ struct Message {
     cc: Vec<String>,
     date: DateTime<Utc>,
     answered: bool,
-    /// 自動產生的信（系統通知、電子報、noreply），不期待回覆。
     automated: bool,
     text: String,
-    /// 本封標頭裡的 (email, 顯示名稱)。
     names: Vec<(String, String)>,
 }
 
 impl Message {
     fn participants(&self) -> impl Iterator<Item = &String> {
-        // 缺少可解析的 From 時 `from` 為空字串，不能算成聯絡人。
         std::iter::once(&self.from)
             .chain(&self.to)
             .chain(&self.cc)
@@ -147,7 +141,6 @@ pub fn build(
         })
         .filter(|message| message.date >= since && message.date <= now)
         .collect::<Vec<_>>();
-    // 先排序，去重後保留哪一份才與輸入順序無關。
     parsed.sort_by(|a, b| b.date.cmp(&a.date).then_with(|| a.id.cmp(&b.id)));
     let mut messages: Vec<Message> = Vec::new();
     let mut seen_message_ids = HashMap::new();
@@ -164,7 +157,6 @@ pub fn build(
         }
         messages.push(message);
     }
-    // 同一地址的名稱可能不同；依排序後順序取最新一封的寫法，與輸入順序無關。
     let mut names = HashMap::new();
     for (email, name) in messages.iter().flat_map(|message| &message.names) {
         names.entry(email.clone()).or_insert_with(|| name.clone());
@@ -207,7 +199,6 @@ pub fn build(
     for person in &mut people {
         person.automated |= listed(&person.email);
     }
-    // 名單可能把原本排在前面的人改成自動，重新排序。
     sort_people(&mut people);
     if person.is_some() {
         people.sort_by_key(|entry| !matches_person(&entry.email));
@@ -258,7 +249,6 @@ fn parse_message(mut item: Item) -> Option<Message> {
                 addresses(headers.get_first_value("Cc")),
             )
         }
-        // 只有摘要的快取沒有原始標頭：寄件者取自 subtitle，其餘地址都視為收件人。
         _ => (
             None,
             Vec::new(),
@@ -316,14 +306,12 @@ fn automated(headers: &[mailparse::MailHeader<'_>]) -> bool {
         .any(|name| headers.get_first_value(name).is_some())
 }
 
-/// 沒有標頭可判斷時，看地址的 local part 是否為常見系統帳號。
 fn automated_address(email: &str) -> bool {
     let local = email.split('@').next().unwrap_or_default();
     let compact = local
         .chars()
         .filter(char::is_ascii_alphanumeric)
         .collect::<String>();
-    // `kmbot` 算；`j.talbot` 這類有分隔符的人名不算。
     let bot = compact.ends_with("bot") && !local.contains(['.', '_', '-']);
     compact.contains("noreply")
         || compact.contains("donotreply")
@@ -398,7 +386,6 @@ fn message_ids(value: Option<String>) -> Vec<String> {
         .collect()
 }
 
-/// 以 Message-ID／References 與正規化主旨（同 `mail thread`）做聯集，回傳每串的訊息索引（新到舊）。
 fn group_threads(messages: &[Message]) -> Vec<Vec<usize>> {
     let mut parent = (0..messages.len()).collect::<Vec<_>>();
     fn find(parent: &mut [usize], mut index: usize) -> usize {
@@ -503,7 +490,6 @@ fn people(
         .flat_map(|(thread, group)| group.iter().map(move |&index| (index, thread)))
         .collect::<HashMap<_, _>>();
     let mut tallies = BTreeMap::<String, Tally>::new();
-    // `kept` 由小到大即由新到舊，最近主旨會先被收集。
     for &index in kept {
         let message = &messages[index];
         let others = message

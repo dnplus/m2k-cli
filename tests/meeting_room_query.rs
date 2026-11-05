@@ -7,8 +7,6 @@ use m2k::{
 use serde_json::Value;
 use tempfile::TempDir;
 
-// A keychain file that does not exist: m2k must never read or write the
-// login keychain from tests.
 const NO_KEYCHAIN: &str = "/nonexistent/m2k-test.keychain-db";
 
 const START: &str = "2026-10-07T10:00:00+08:00";

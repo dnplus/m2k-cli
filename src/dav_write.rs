@@ -1,4 +1,3 @@
-//! CalDAV／CardDAV 寫入的唯一路徑：CLI 與 TUI 都經過這裡。
 //! 建立用 `If-None-Match: *`，更新與刪除用 `base` 的 ETag `If-Match`；不自動重試。
 //! PUT 已接受但本機快取失敗時回傳 [`RemoteWritePendingReconcile`] receipt。
 
@@ -18,11 +17,10 @@ fn online(dir: &Path) -> Result<(Config, String)> {
     }
     let cfg = config::load(dir)?;
     Store::open(dir)?.ensure_account(&cfg)?;
-    let pass = config::password(dir, &cfg)?;
+    let pass = config::password(&cfg)?;
     Ok((cfg, pass))
 }
 
-/// 讀本機快取的資源，並確認類型相符。
 pub fn get(dir: &Path, id: &str, kind: Kind) -> Result<Item> {
     let mut store = Store::open(dir)?;
     store.ensure_account(&config::load(dir)?)?;
@@ -32,9 +30,6 @@ pub fn get(dir: &Path, id: &str, kind: Kind) -> Result<Item> {
     }
     Ok(item)
 }
-
-// 錯誤順序固定為：sync.lock（account_busy）→ 本機資源 → 連線設定與密碼 → 內容。
-// 內容由 closure 在這些檢查之後才產生，讀檔錯誤不會蓋掉忙碌或展示資料的錯誤。
 
 /// 新增資源；`collection` 省略時用設定的 CalDAV／CardDAV URL。
 /// `body` 收到實際要寫入的 collection URL，回傳要 PUT 的內容。

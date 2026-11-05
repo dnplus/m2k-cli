@@ -1,9 +1,3 @@
-//! Real m2k binary against the loopback fixture with and without RFC 6578
-//! sync-collection: a full `sync` stores the token, the next `watch` tick
-//! fetches only the delta, a rejected token falls back to one full sync,
-//! and a server without sync-collection keeps the near-window ETag refresh.
-//! Request counts come from the fixture's `http.jsonl`.
-
 #[path = "../examples/m2k_fixture/fixture.rs"]
 mod fixture;
 
@@ -15,7 +9,6 @@ use std::{
 
 const PASSWORD: &str = "fixture-test-password";
 const USER: &str = "fixture@example.test";
-/// Unchanged near events: the ETag window REPORT lists them on every tick.
 const FILLER: usize = 20;
 
 struct Run {
@@ -72,8 +65,6 @@ impl Run {
         serde_json::from_str(stdout.trim()).expect("m2k JSON")
     }
 
-    /// One `watch` cycle: the periodic (non-full) policy, since `sync` just
-    /// recorded a full calendar sync.
     fn watch_once(&self) -> Value {
         let mut child = Command::new(env!("CARGO_BIN_EXE_m2k"))
             .arg("--json")
@@ -105,7 +96,6 @@ impl Run {
         )
     }
 
-    /// Another client edits the server calendar behind m2k's back.
     fn put(&self, uid: &str, title: &str, days: i64) {
         let start = chrono::Utc::now().date_naive() + chrono::Duration::days(days);
         let at = |hour| format!("{}T{hour:02}0000Z", start.format("%Y%m%d"));
@@ -182,8 +172,6 @@ impl Run {
         self.metadata("sync.calendar.token.")
     }
 
-    /// Edit, delete, add, and move an event far outside the ±30 day window,
-    /// then run one watch tick and return the DAV requests it made.
     fn change_then_watch(&self) -> Vec<Value> {
         self.put("filler-0", "已修改", 3);
         self.delete("filler-1");
@@ -231,7 +219,6 @@ fn sync_token_watch_fetches_only_the_delta_and_costs_less_than_etag_window() {
     );
     let etag_requests = etag_run.change_then_watch();
 
-    // Token path: discovery, one delta REPORT, and a GET per changed event.
     assert_eq!(
         methods(&token_requests),
         ["PROPFIND", "REPORT", "GET", "GET", "GET"],
@@ -246,8 +233,6 @@ fn sync_token_watch_fetches_only_the_delta_and_costs_less_than_etag_window() {
     assert!(report(&token_requests, "calendar-query").is_empty());
     assert_ne!(token_run.tokens(), stored, "token advances after the delta");
 
-    // ETag fallback: near-window listing of every near event, plus GETs to
-    // confirm the moved and deleted events that left the window.
     assert!(report(&etag_requests, "sync-collection").is_empty());
     let window = report(&etag_requests, "calendar-query");
     assert_eq!(window.len(), 1, "{etag_requests:#?}");
@@ -258,8 +243,6 @@ fn sync_token_watch_fetches_only_the_delta_and_costs_less_than_etag_window() {
         token_requests.len(),
         etag_requests.len()
     );
-    // Discovery (Depth-1 PROPFIND) is identical for both; the REPORT payload
-    // is where the delta saves: changed members only vs. every near event.
     let report_responses = |requests: &[Value]| {
         let reports = requests
             .iter()
@@ -270,7 +253,6 @@ fn sync_token_watch_fetches_only_the_delta_and_costs_less_than_etag_window() {
     };
     assert!(report_responses(&token_requests) * 4 < report_responses(&etag_requests));
 
-    // Both strategies converge on the same cache.
     let titles = token_run.titles();
     assert_eq!(titles, etag_run.titles());
     assert!(titles.contains(&"已修改".to_owned()));
@@ -286,7 +268,6 @@ fn rejected_token_is_cleared_and_replaced_by_one_full_sync() {
     let full_before = run.metadata("sync.calendar.full_success_at");
     let (key, _) = run.tokens().remove(0);
     let db = rusqlite::Connection::open(run.client.join("database.sqlite3")).unwrap();
-    // A token from another fixture run, as after a server-side reset.
     db.execute(
         "UPDATE metadata SET value = 'http://m2k.fixture/sync/deadbeef/1' WHERE key = ?1",
         [&key],
@@ -320,7 +301,6 @@ fn rejected_token_is_cleared_and_replaced_by_one_full_sync() {
 
 #[test]
 fn untrustworthy_sync_collection_falls_back_to_the_near_window_in_the_same_tick() {
-    // Fixture test hooks: 501, and a 207 multistatus without a sync-token.
     for (broken, status) in [
         ("http://m2k.fixture/broken/501", "501 Not Implemented"),
         ("http://m2k.fixture/broken/no-token", "207 Multi-Status"),
@@ -359,7 +339,6 @@ fn delta_is_not_trusted_once_the_near_window_check_is_an_hour_old() {
         run.metadata("sync.calendar.window_success_at"),
         [("sync.calendar.window_success_at".to_owned(), stale)]
     );
-    // The next tick, within the hour, trusts the delta again.
     let before = run.http_lines().len();
     run.watch_once();
     let requests = run.http_lines().split_off(before);

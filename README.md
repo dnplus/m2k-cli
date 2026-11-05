@@ -25,7 +25,7 @@ cargo install --path . --locked
 
 密碼存在系統密碼庫：macOS 透過 Apple 簽章的 `/usr/bin/security` 讀寫登入鑰匙圈，Windows 用認證管理員，Linux 用 Secret Service。macOS 項目的存取權限信任的是 `security` 而不是 m2k 執行檔，所以重新編譯、`cargo install` 或下載的 release binary 都不會再跳授權視窗。安全性取捨和 `gh` 相同：同一個使用者的任何程式只要執行 `security find-generic-password -s m2k -g` 就能讀到密碼；需要更嚴格的隔離時，請改用 `M2K_PASSWORD` 由外部密碼管理工具注入。寫入時密碼經由標準輸入交給 `security`，不會出現在程序參數列。
 
-從舊版升級：舊版建立的鑰匙圈項目只信任當初的 m2k 執行檔，升級後第一次讀取時 macOS 會跳出授權視窗，可能要求輸入登入鑰匙圈密碼，請選「永遠允許」。讀到密碼後 m2k 會刪除舊項目、由 `security` 重新建立（`add-generic-password -U` 不會更換既有項目的存取權限，所以必須重建），之後就不會再問；完成的帳號記錄在資料目錄的 `keychain-acl-migrated`。重新寫入失敗會再試一次；仍失敗時 stderr 會說明舊項目已刪除，請重新執行 `m2k auth login`。`M2K_PASSWORD` 提供的密碼不會寫進鑰匙圈，`m2k doctor` 是唯讀檢查，兩者都不做這個遷移。每次呼叫 `security`（讀取、刪除、重新寫入）最多等待 15 秒，逾時會結束該 `security` 程序，不留下背景程序。若先前為 m2k 建立過「m2k local codesign」自簽憑證，現在可以自行在「鑰匙圈存取」刪除，m2k 不會替你刪。
+每次呼叫 `security`（讀取、寫入、刪除）最多等待 15 秒，逾時會結束該 `security` 程序，不留下背景程序。若先前為 m2k 建立過「m2k local codesign」自簽憑證，現在可以自行在「鑰匙圈存取」刪除，m2k 不會替你刪。
 
 `M2K_KEYCHAIN` 可指定一個鑰匙圈檔路徑，macOS 上所有 `security` 指令都改用該檔而不碰登入鑰匙圈；測試以不存在的路徑讓 m2k 視為沒有存放密碼。其他平台忽略這個變數。
 
@@ -52,7 +52,7 @@ m2k tui
 
 `auth login` 隱藏輸入密碼，檢查四種服務後存入系統密碼庫。`auth logout` 移除密碼，保留離線資料。自動化環境可提供 `M2K_PASSWORD`，程式不會把它寫進設定或 SQLite。設定與資料檔權限為 `0600`，資料目錄為 `0700`；這是本機檔案存取保護，SQLite 內容沒有另行加密。
 
-`m2k doctor`（可加 `--json`）是唯讀的驗收前檢查，一次回答「這台機器、這個帳號能不能開始正式驗收」。逐項回報 `pass`／`warn`／`fail`／`skip` 與原因（`warn` 不算失敗）：`build`（版本與 build commit）、`data_dir`（0700）、`config`（存在、有效、0600）、`site_profile`（實際生效的 profile；通用 profile 且沒有任何使用者 profile 時為 `warn` 並附遷移步驟）、`credentials`（系統密碼庫或 `M2K_PASSWORD`）、`imap`、`smtp`、`caldav`、`carddav`（登入並探索 principal／collection）、`database`（可開啟且 schema 為最新）、`sync_lock`（沒有被其他程序占用）。展示資料目錄會把所有線上與憑證檢查標為 `skip` 並註明原因。任何一項 `fail` 即以狀態 1 結束；`--json` 不論成功或失敗，都從同一個頂層路徑讀結果：`checks`、`version`、`build_commit`、`data_dir`、`demo`。失敗時另外沿用錯誤契約（`state:"error"`、`error.code:"doctor_failed"`）；舊的 `report`（內容與頂層相同）保留給既有腳本，新腳本請讀頂層。doctor 不寄信、不改旗標、不寫行事曆、不建立或遷移任何本機檔案，錯誤訊息也不會出現密碼；SMTP 只做連線與認證測試。
+`m2k doctor`（可加 `--json`）是唯讀的驗收前檢查，一次回答「這台機器、這個帳號能不能開始正式驗收」。逐項回報 `pass`／`warn`／`fail`／`skip` 與原因（`warn` 不算失敗）：`build`（版本與 build commit）、`data_dir`（0700）、`config`（存在、有效、0600）、`site_profile`（實際生效的 profile）、`credentials`（系統密碼庫或 `M2K_PASSWORD`）、`imap`、`smtp`、`caldav`、`carddav`（登入並探索 principal／collection）、`database`（可開啟且 schema 為最新）、`sync_lock`（沒有被其他程序占用）。展示資料目錄會把所有線上與憑證檢查標為 `skip` 並註明原因。任何一項 `fail` 即以狀態 1 結束；`--json` 不論成功或失敗，都從同一個頂層路徑讀結果：`checks`、`version`、`build_commit`、`data_dir`、`demo`。失敗時另外沿用錯誤契約（`state:"error"`、`error.code:"doctor_failed"`）。doctor 不寄信、不改旗標、不寫行事曆、不建立或遷移任何本機檔案，錯誤訊息也不會出現密碼；SMTP 只做連線與認證測試。
 
 若網路擋住 SMTP 587，可執行 `m2k config set --smtp-port 465`，改用 implicit TLS。
 
@@ -66,7 +66,7 @@ m2k init --username your_account --email your_account@example.com \
 
 ### Site profile
 
-站台差異（CalDAV／CardDAV 路徑、公司通訊錄根、會議室 provider、據點清單、房名解析規則、內建 fallback 會議室）放在 site profile，不寫在程式裡。`init` 與 `auth login` 可用 `--site-profile` 指定 profile 名稱或 JSON 檔路徑，存進 `config.json` 的 `site_profile`；未指定時，若伺服器符合某個 profile 的 `server` 就自動套用，否則使用只含 Mail2000 通用路徑的 `mail2000` profile，選到的名稱同樣寫進 `site_profile`。舊版建立、沒有 `site_profile` 的設定在每次執行時依伺服器自動選用。
+站台差異（CalDAV／CardDAV 路徑、公司通訊錄根、會議室 provider、據點清單、房名解析規則、內建 fallback 會議室）放在 site profile，不寫在程式裡。`init` 與 `auth login` 可用 `--site-profile` 指定 profile 名稱或 JSON 檔路徑，存進 `config.json` 的 `site_profile`；未指定時，若伺服器符合某個 profile 的 `server` 就自動套用，否則使用只含 Mail2000 通用路徑的 `mail2000` profile，選到的名稱同樣寫進 `site_profile`。依伺服器自動選用只發生在 `init` 與 `auth login`；`config.json` 沒有 `site_profile` 時，m2k 使用 `mail2000` profile。
 
 程式只內建 `mail2000`（通用）與 `demo`（展示用、虛構）兩個 profile，在 `src/site/*.json`。站台專屬的 profile（含真實會議室 access 名稱）不放進程式，由使用者放在資料目錄的 `site-profiles/<name>.json`（例如 macOS 為 `~/Library/Application Support/m2k/site-profiles/`，`--data-dir` 指定時為該目錄下的 `site-profiles/`），之後以 `--site-profile <name>` 或伺服器自動選用；也可直接給任意路徑（含 `/` 或副檔名才視為路徑，單純名稱只找 `site-profiles/`）。環境變數 `M2K_SITE_PROFILE_DIR` 可改用其他目錄。使用者 profile 與內建 profile 同名時使用內建版本並顯示警告。範本見 [`examples/site-profile.example.json`](examples/site-profile.example.json)，內容全部虛構。
 
@@ -86,19 +86,6 @@ m2k init --username your_account --email your_account@example.com \
 ```
 
 除了 `name` 以外都可省略；`{domain}` 代入帳號 email 的網域。profile 有 `server` 時，`init --site-profile NAME|FILE` 可省略 `--server`。`site-profiles/` 中格式錯誤的檔案在依伺服器自動選用時會被略過，以名稱指定時才報錯。
-
-#### 從內建站台 profile 遷移
-
-舊版曾把某個站台的 profile 編進程式。升級到不內建該 profile 的版本前，先把舊檔複製到資料目錄，`config.json` 不需修改：
-
-```sh
-DATA_DIR="$HOME/Library/Application Support/m2k"   # Linux：~/.local/share/m2k；或你的 --data-dir
-mkdir -p "$DATA_DIR/site-profiles"
-git show <舊版 commit>:src/site/<name>.json > "$DATA_DIR/site-profiles/<name>.json"
-m2k --json meeting resources | head   # 確認會議室清單與升級前相同
-```
-
-`config.json` 的 `site_profile` 若是該名稱，會改從這個檔案載入；若沒有 `site_profile`、原本靠伺服器自動選用，也會依檔案中的 `server` 選到同一份 profile。檔案不存在時，以名稱指定的設定會明確報錯並指出預期路徑；靠伺服器自動選用的設定則退回通用 `mail2000` profile（沒有會議室清單）；這時 `m2k doctor` 的 `site_profile` 項目回報 `warn`，`meeting resources`／`meeting rooms` 找不到任何會議室時在 stderr 與 JSON `warnings` 附上本段步驟，`directory self` 無法判定根通訊錄時也會提示。
 
 ## 同步與循環保存
 
@@ -122,7 +109,7 @@ m2k prune
 
 `status --json` 包含 `version`、`build_commit`、最近同步結果與 `progress`。同步進度記錄準備／探索／取得／保存階段、目前資料種類與已保存筆數；取得資料時不提供猜測的百分比。程序中斷後鎖已釋放，未完成紀錄會顯示 `interrupted`，不會繼續宣稱同步中。
 
-鄰近日曆同步中，原本在區間內、此次未回傳的已快取單次事件，會依原 href 再 GET：移到遠處的事件更新到新日期，只有 404／410 才移除；權限或解析錯誤保留原快取。既有資料庫自動升級至 schema 3，保留 schema 2 的聯絡人聚合與 memberships，加入郵件監看進度與 webhook 待送事件；TUI 翻頁只解碼當頁資料。
+鄰近日曆同步中，原本在區間內、此次未回傳的已快取單次事件，會依原 href 再 GET：移到遠處的事件更新到新日期，只有 404／410 才移除；權限或解析錯誤保留原快取。既有資料庫自動升級至 schema 4。升級保留 schema 2 的聯絡人聚合與 memberships，schema 3 加入郵件監看進度與 webhook 待送事件，schema 4 加入本機全文搜尋索引 `items_search`（升級時間與限制見 [EFFICIENCY.md](EFFICIENCY.md)）。TUI 翻頁只解碼當頁資料。
 
 `--json` 的執行及參數錯誤會以非零退出碼與單一 JSON 回傳，例如：
 
@@ -167,7 +154,14 @@ CLI 的郵件／行事曆／聯絡人列表採固定欄寬單行，長欄位以 
 
 `mail show MESSAGE_ID` 顯示指定郵件的新回覆正文，去除 `>` 引用行，以及 `On … wrote:`、`-----Original Message-----` 等明確歷史回覆區塊。`mail thread --id MESSAGE_ID`／`--subject '主旨'` 預設只顯示同主旨最新一封的新正文；`--full` 才顯示歷史郵件與引用，`thread --full --limit N` 限制最新 N 封。過濾只影響顯示，不修改 SQLite、raw 或 TUI；`show --raw` 仍輸出完整 RFC822。JSON 讀信也套用同一預設，`text` 為新正文且 `raw` 為空；加 `--full` 恢復完整 text／raw。引用辨識採文字規則，特殊格式可用 `--full` 查看原文。
 
-`mail graph` 從本機快取確定性地整理近 N 天（預設 14）的人脈與信件串，不呼叫模型、不連線，相同快取得到相同結果。信件串以 Message-ID／In-Reply-To／References 與正規化主旨（同 `mail thread`）聯集，收件匣與寄件備份的同一封信以 Message-ID 去重。每串標示 `awaiting_me`（他人最後寄出、我在收件人且未標記已回覆）、`awaiting_them`（我最後寄出）、`replied`（已標記 `\Answered`）或 `fyi`（副本、知會或自動信）；自動信依 `Auto-Submitted`、`Precedence: bulk`、`List-Id`／`List-Unsubscribe`、`X-Auto-Response-Suppress`、`Feedback-ID` 標頭或 noreply／bot 類地址判定，這類寄件者在聯絡人中標為 `automated` 並排在真人之後。沒有這些標頭的內部系統帳號，可用 `m2k config set --automated-senders 'mis,@vendor.example,ops@example.com'` 列入名單（local part、`@網域` 或完整地址，不分大小寫；每次設定取代整份名單，`--automated-senders ''` 清空），附最新回覆摘錄與可交給 `mail show` 的 ID。聯絡人依往來封數排序，列出對方寄／我寄、串數、最近往來、近期主旨與常同框的人。預設輸出 Markdown 方便直接放進代理程式脈絡，`--json` 為結構化；`--person` 只保留與某人相關的串。只有摘要快取、沒有原始標頭的郵件改用寄件者與主旨判斷。
+`mail graph` 從本機快取整理最近 `--days` 天（預設 14，可填 1–365）的人脈與信件串。它不連線、不呼叫模型，相同快取得到相同結果。預設輸出 Markdown，可直接放進代理程式脈絡；加 `--json` 輸出結構化結果。
+
+- 信件串以 Message-ID、In-Reply-To、References 與正規化主旨（與 `mail thread` 相同）合併，收件匣與寄件備份中的同一封信以 Message-ID 去重。每串附最新回覆摘錄（`--excerpt-chars`，預設 280 字）與可交給 `mail show` 的 ID，最多列出 `--threads` 串（預設 30）。
+- 每串依序判斷一種狀態：最後一封由我寄出為 `awaiting_them`；最後一封已標記 `\Answered` 為 `replied`；最後一封不是自動信且我在 To 收件人中為 `awaiting_me`；其餘為 `fyi`，例如副本、知會或自動信。
+- 聯絡人依往來封數排序，最多列出 `--people` 位（預設 20），每位列出對方寄出與我寄出的封數、串數、最近往來、近期主旨與常一起出現的人。`--person` 只保留與某人相關的串，比對 email 或姓名片段。
+- 自動信依 `Auto-Submitted`、`Precedence: bulk`、`List-Id`、`List-Unsubscribe`、`X-Auto-Response-Suppress`、`Feedback-ID` 標頭，或 noreply、bot 類地址判定。這類寄件者在聯絡人中標為 `automated`，排在真人之後。只有摘要快取、沒有原始標頭的郵件改用寄件者與主旨判斷。
+
+沒有自動信標頭的內部系統帳號，可用 `m2k config set --automated-senders 'mis,@vendor.example,ops@example.com'` 列入名單。每個項目可以是 local part、`@網域` 或完整地址，不分大小寫。每次設定取代整份名單，`--automated-senders ''` 清空名單。
 
 郵件保存日期優先採伺服器的 `INTERNALDATE`，避免新收到但 `Date` header 很舊的郵件被立即清除。
 
@@ -259,9 +253,33 @@ m2k directory chart --format mermaid
 
 首次可明確執行 `--scope company` 初始化企業目錄，再使用部門／分支 refresh；若自己所屬部門尚未確認，使用 `--addressbook` 指定實際分支。
 
-`directory chart` 從本機快取確定性輸出部門組織圖，不連線、不呼叫模型，相同快取得到相同結果。預設為縮排 Markdown：每個部門列出直屬成員：全名取自 vCard `N`（Mail2000 的 `FN` 只是帳號），括號內為帳號，另列職稱、分機或電話；email 為「帳號@最常見網域」時不重複列出，例外才另列，`--json` 保留完整 `emails` 與 `username`，方便直接當代理程式脈絡；`--json` 為巢狀結構，`--format mermaid` 只畫部門與直屬人數。最上層通訊錄是全公司名單，只列沒有部門歸屬的人；兼任多個部門的人在各部門都會列出，總人數只算一次。`--branch` 只輸出指定分支及其子部門，可填 path（前導 `/` 可省略）、名稱或 URL。Mail2000 的 vCard 沒有主管或匯報欄位，所以組織圖只呈現部門歸屬，不畫匯報線也不推估主管，輸出內會註明。需要先以 `directory sync --scope company` 同步聯絡人。
+`directory chart` 從本機快取輸出部門組織圖。它不連線、不呼叫模型，相同快取得到相同結果。使用前先以 `directory sync --scope company` 同步聯絡人。
 
-全公司同步耗時較長時，可由一台機器同步後共用快取：`m2k directory export --output /shared/m2k-dir.json` 把本機快取中公司通訊錄根（預設取站台設定的 `company_directory_root`，可用 `--addressbook` 指定分支）及其子部門的聯絡人寫成 `m2k-directory/1` JSON（暫存檔加 rename 原子寫入），不含個人通訊錄。其他資料目錄設定 `M2K_DIRECTORY_CACHE=/shared/m2k-dir.json` 後，`directory search`／`resolve`／`self`／`chart` 會在檔案的 `generated_at` 比上次匯入新時，先把檔案內各分支當成權威快照匯入本機快取（已離職者會被移除），再照常查詢；同一份檔案不會重複匯入。檔案不存在或無法讀取時只在 stderr 警告並沿用本機快取；匯入只寫入自己的資料目錄，檔案所在目錄可唯讀。
+- 預設輸出縮排 Markdown，可直接放進代理程式脈絡。每個部門列出直屬成員。全名取自 vCard `N`（Mail2000 的 `FN` 只是帳號），括號內為帳號，另列職稱、分機或電話。email 是「帳號@最常見網域」時不重複列出，其他 email 另列。
+- `--json` 輸出巢狀部門結構，保留完整的 `emails` 與 `username`。`--format mermaid` 只畫部門與直屬人數。
+- 最上層通訊錄是全公司名單，只列沒有部門歸屬的人。兼任多個部門的人在各部門都會列出，總人數只算一次。
+- `--branch` 只輸出指定分支及其子部門，可填 path（前導 `/` 可省略）、名稱或 URL。
+- Mail2000 的 vCard 沒有主管或匯報欄位，所以組織圖只呈現部門歸屬，不畫匯報線，也不推估主管。輸出內會註明這一點。
+
+### 共用通訊錄快取
+
+全公司同步耗時較長。若要讓多個資料目錄共用一台機器同步的結果，在已同步的機器上匯出，再讓其他資料目錄讀取同一個檔案：
+
+```sh
+# 已同步的機器：
+m2k directory sync --scope company
+m2k directory export --output /shared/m2k-dir.json
+# 其他機器或資料目錄：
+M2K_DIRECTORY_CACHE=/shared/m2k-dir.json m2k directory resolve '王小明'
+```
+
+`directory export` 把本機快取中公司通訊錄根及其子部門的聯絡人寫成 `m2k-directory/1` JSON，不含個人通訊錄。通訊錄根預設取 site profile 的 `company_directory_root`，可用 `--addressbook` 指定其他分支。檔案以暫存檔加 rename 原子寫入。命令在 stdout 輸出 JSON 結果：`output`、`generated_at`、`collections`、`items`。本機快取沒有該分支的聯絡人時，命令報錯並提示先執行 `directory sync --scope company`。
+
+設定 `M2K_DIRECTORY_CACHE` 後，`directory search`、`directory resolve`、`directory self` 與 `directory chart` 在查詢前檢查檔案：
+
+- 檔案的 `generated_at` 比這個資料目錄上次匯入的時間新時，m2k 把檔案內各分支當成權威快照匯入本機快取，已離職者會被移除，stderr 印出匯入筆數。同一份檔案不會重複匯入。
+- 檔案不存在、無法讀取或格式不符時，m2k 只在 stderr 警告，照常使用本機快取查詢。
+- 匯入只寫入自己的資料目錄，檔案所在目錄可以是唯讀。
 
 ## 會議與會議室
 
@@ -301,7 +319,7 @@ m2k meeting rsvp MAIL_ID --response decline --comment '那天出差'
 
 `meeting rooms --json` 的 `calendars` 列出每間房的 `source`（cache／remote／demo／unknown）、`fetched_at` 與 coverage 起迄。加 `--refresh` 同時略過會議室目錄與行事曆快取，重新讀取並更新快取。會議室目錄與已忙碌的精確時段可沿用 10 分鐘內且涵蓋查詢範圍的快取；可能有空的房間及 `--minutes` 空檔搜尋每次重新查詢，避免其他人新增預約後仍顯示有空。重新查詢失敗顯示未知，不以舊快取宣告有空。訂房的 live recheck 仍每次執行。
 
-`meeting book --dry-run` 會即時檢查個人／房間行事曆，因此仍需認證，但不寫入行事曆。系統密碼庫讀取最多等待 15 秒；macOS 授權逾時時（通常是升級後第一次讀取舊項目），m2k 會結束 `security` 程序；請重新執行並在授權視窗允許 `security` 存取（可能需要輸入登入密碼），或重新執行 `m2k auth login`。DAV 每次 HTTP 請求有 20 秒逾時；多個 discovery／查詢請求的總時間可能更長。
+`meeting book --dry-run` 會即時檢查個人／房間行事曆，因此仍需認證，但不寫入行事曆。系統密碼庫讀取最多等待 15 秒；macOS 授權逾時時，m2k 會結束 `security` 程序；請重新執行並在授權視窗允許 `security` 存取（可能需要輸入登入密碼），或重新執行 `m2k auth login`。DAV 每次 HTTP 請求有 20 秒逾時；多個 discovery／查詢請求的總時間可能更長。
 
 DAV collection 身分比對接受路徑中的 `%40`／`@`、安全字元的 percent-encoding 與結尾斜線差異，舊資料庫帳號資訊也可沿用。密碼庫項目識別仍維持原有規則；若改過設定 URL 而找不到密碼項目，請重新執行 `m2k auth login`。
 
@@ -407,6 +425,7 @@ m2k skills install --path ~/.cursor/skills
 | 近期往來脈絡（人脈與待回覆串） | `mail graph` |
 | 清理預覽、精確範圍確認與執行 | `mail cleanup-preview`、`mail cleanup-execute` |
 | 全公司／部門／分支目錄、自己身份、組織圖 | `directory sync/tree/search/resolve/self/chart` |
+| 多個資料目錄共用通訊錄快取 | `directory export`、`M2K_DIRECTORY_CACHE` |
 | 個人與同事行事曆、日期範圍 | `calendar`、`meeting events`、`date-range` |
 | 衝突、共同空檔、方案檢查 | `meeting free-busy/slots/review` |
 | 房間候選與預約 | `meeting resources/rooms/book` |
@@ -424,7 +443,10 @@ m2k skills install --path ~/.cursor/skills
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+.agents/skills/verify-m2k/scripts/smoke
 ```
+
+`smoke` 需要 tmux。它建置 debug binary，在新建的展示資料目錄執行 `doctor` 與幾個 CLI 命令，再以 tmux 開啟 TUI 並切到行事曆頁。全部通過時印出 `SMOKE OK`，任一檢查失敗即以非零狀態結束。要逐項驅動 CLI 與 TUI 並留下證據，依 [`.agents/skills/verify-m2k/SKILL.md`](.agents/skills/verify-m2k/SKILL.md) 操作；`.claude/skills/verify-m2k` 是指向同一目錄的 symlink。
 
 線上路徑（TLS IMAP/SMTP、DAV 同步、會議室預約 PUT、webhook）可用本機假 Mail2000 驗證，流程見 [examples/m2k_fixture/README.md](examples/m2k_fixture/README.md)；`cargo test --test fixture_e2e` 會自動跑一次。
 

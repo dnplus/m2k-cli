@@ -1,6 +1,6 @@
 ---
 name: verify-m2k
-description: Drive the real m2k binary (Mail2000 Rust CLI + TUI) the way a user does and capture evidence — CLI commands with exit codes and the tmux-driven TUI — against an isolated demo data dir. Use when proving a change to m2k's mail, calendar, contacts, meeting, config, JSON-error or TUI behavior works in the built app, not just in `cargo test`.
+description: Drive the real m2k binary (Mail2000 Rust CLI + TUI) the way a user does and capture evidence — CLI commands with exit codes and the tmux-driven TUI — against an isolated demo data dir. Use when proving a change to m2k's mail (incl. `mail graph`), calendar, contacts, directory (`chart`, `export`, `M2K_DIRECTORY_CACHE`), meeting, config, doctor, JSON-error or TUI behavior works in the built app, not just in `cargo test`.
 ---
 
 # Verify m2k
@@ -31,6 +31,8 @@ Each run has its own data dir, so runs can go side by side. Never point the help
 
 Read-only. Checks the binary's build commit contains `git rev-parse --short=12 HEAD` (a `-dirty` suffix is expected with uncommitted edits), the data dir is a demo dir, and seed counts. A fresh demo seed is mail 2 / calendar 3 (the personal event plus two seeded room events) / contacts 2; anything else prints `WARN` (an earlier mutation in this run). Run it first, and again whenever output looks wrong.
 
+m2k's own read-only doctor is a second view of the same dir: `m2kv cli "$RUN" -- --json doctor` exits 0 with `"demo": true`, `site_profile` `pass` with detail `demo（config 指定 demo）`, `credentials`/`imap`/`smtp`/`caldav`/`carddav` `skip` (`展示資料目錄：不進行線上檢查`), and `database`/`sync_lock` `pass`. There is no `report` field and no `warn` on a fresh demo dir.
+
 ## Drive
 
 CLI — every argument after `--` goes to `m2k --data-dir <run>`:
@@ -39,7 +41,7 @@ CLI — every argument after `--` goes to `m2k --data-dir <run>`:
 .agents/skills/verify-m2k/scripts/m2kv cli "$RUN" -- --json mail list
 ```
 
-Prefer `--json` for assertions; text lists are fixed-width and truncate with `…`. Errors under `--json` are a single object `{"state":"error","error":{"code":...}}` with a non-zero exit.
+Prefer `--json` for assertions; text lists are fixed-width and truncate with `…`. Errors under `--json` are a single object `{"state":"error","error":{"code":...}}` with a non-zero exit. `m2kv cli` passes the caller's environment through, so set a variable on the call (`M2K_DIRECTORY_CACHE=$PWD/.tmp/verify/$RUN/dir.json m2kv cli "$RUN" -- directory chart`); every `M2K_*` variable except `M2K_PASSWORD` is written to the evidence file as an `env:` line.
 
 TUI — tmux, 120×32:
 
@@ -59,7 +61,7 @@ The feature recipes live in [features/README.md](features/README.md). Read the i
 Everything lands in `.tmp/verify/$RUN/` (gitignored), numbered in run order:
 
 - `000-launch.json` — the seeded status.
-- `NNN-cli.txt` — the exact command, exit code, stdout, stderr.
+- `NNN-cli.txt` — `env:` lines for any `M2K_*` variable set, then the exact command, exit code, stdout, stderr.
 - `NNN-tui-<name>.txt` — a captured TUI frame.
 
 Proof standards:
@@ -67,7 +69,7 @@ Proof standards:
 - Drive the user's command or keys, not SQLite or test-only code.
 - Capture the action and the resulting state. For a mutation (config set, prepare), read it back with a second command (`config show`, `cat` the file, `invite --dry-run`).
 - A dry-run claims no side effect; prove it from its output (`"sent": false`) and from the absence of anything else changing.
-- Online commands (`sync`, `mail send|flag|move|delete`, `meeting book`, `mail watch`, `auth`) cannot be proven here: against demo data they must fail with `operation_failed`, and that refusal is the only thing this harness verifies about them. Report their real behavior as **NOT RUN**, never as verified. Their protocol logic is covered by loopback fixtures in `tests/` (`cargo test --offline --locked`).
+- Online commands (`sync`, `mail send|flag|move|delete`, `meeting book`, `mail watch`, `auth`, `directory sync|tree`) cannot be proven here: against demo data they must fail with `operation_failed`, and that refusal is the only thing this harness verifies about them. Report their real behavior as **NOT RUN**, never as verified. Their protocol logic is covered by loopback fixtures in `tests/` (`cargo test --offline --locked`).
 
 ## Cleanup
 

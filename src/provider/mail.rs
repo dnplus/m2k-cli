@@ -1329,7 +1329,6 @@ fn select_smtp_port(port: u16, probe: impl FnOnce() -> std::io::Result<()>) -> R
 
 fn smtp_tcp_probe(host: &str, port: u16) -> std::io::Result<()> {
     use std::net::{TcpStream, ToSocketAddrs};
-    // DNS errors are deliberately outside the fallback decision.
     let addresses = (host, port)
         .to_socket_addrs()
         .map_err(std::io::Error::other)?

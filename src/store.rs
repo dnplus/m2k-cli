@@ -69,8 +69,6 @@ impl Store {
         }
         if version < SCHEMA_VERSION {
             if search::backfill_is_slow(&conn, version)? {
-                // Runs before the TUI enters the alternate screen, so both CLI
-                // and TUI users see why the first open is slow.
                 eprintln!("正在建立搜尋索引（第一次升級，可能需要數十秒）…");
             }
             let tx = conn.unchecked_transaction()?;
@@ -278,10 +276,6 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        // A cache written before DAV collection ids were canonicalized can hold
-        // the same collection under another spelling (e.g. `%3d` vs `%3D`). The
-        // DAV sync already treats those rows as this collection's previous
-        // items, so the snapshot replaces them too instead of colliding on ids.
         let identities = collection_ids
             .iter()
             .map(|id| crate::dav_url::identity(id))
@@ -634,10 +628,6 @@ impl Store {
         self.prune_kinds(config, now, &[Kind::Mail, Kind::Calendar, Kind::Contacts])
     }
 
-    pub fn prune_kind(&mut self, config: &Config, now: DateTime<Utc>, kind: Kind) -> Result<usize> {
-        self.prune_kinds(config, now, &[kind])
-    }
-
     pub fn prune_kinds(
         &mut self,
         config: &Config,
@@ -751,8 +741,7 @@ impl Store {
         Ok(())
     }
 
-    /// RFC 6578 sync-tokens keyed by calendar collection id, stored in
-    /// `metadata` so no schema change is needed.
+    /// RFC 6578 sync-tokens keyed by calendar collection id.
     pub fn calendar_sync_tokens(&self) -> Result<std::collections::BTreeMap<String, String>> {
         let mut statement = self
             .conn
@@ -1213,8 +1202,7 @@ fn upsert_items(tx: &Transaction<'_>, items: &[EncodedItem], last_seen: i64) -> 
 /// Makes the items of `kind` (limited to `collections` when given) equal to
 /// `items`. Rows that stay keep their rowid and are updated in place, so the
 /// search index trigger only rewrites rows whose searchable text changed.
-/// An id held outside the replaced scope is rejected, as a plain INSERT
-/// after deleting the scope would have been.
+/// An id held outside the replaced scope is rejected.
 fn replace_items(
     tx: &Transaction<'_>,
     kind: &str,
@@ -1464,8 +1452,7 @@ fn mail_expired(date: Option<&str>, cutoff: DateTime<Utc>) -> bool {
 /// Drops mail that retention pruning would delete right after the sync.
 /// IMAP `SINCE` matches whole days of INTERNALDATE, so the server keeps
 /// returning messages on the boundary day that are already past the exact
-/// cutoff; inserting and then pruning them rewrote the search index on
-/// every unchanged sync.
+/// cutoff.
 pub(crate) fn without_expired_mail(
     mut snapshot: Snapshot,
     config: &Config,
