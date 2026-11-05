@@ -13,7 +13,7 @@ A user asks for the org chart of the cached company directory: each department w
 
 - `m2k directory chart [--branch /EXAMPLE_ALL/Engineering] [--format markdown|mermaid]`, `m2k --json directory chart`.
 - On a real account this needs `m2k directory sync --scope company` first (online), or a shared file through `M2K_DIRECTORY_CACHE` (see directory-export-cache.md).
-- No TUI entry.
+- TUI: contacts tab `v` (see tui-org-chart.md).
 
 ## Driving it with m2kv
 
