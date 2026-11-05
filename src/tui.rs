@@ -949,8 +949,18 @@ impl App {
                 self.status = job.done;
             }
             Ok(None) => {
-                self.close_detail();
-                self.reload()?;
+                // 移動／刪除只影響這一封。使用者在等待時另開信件或切換分頁，完成時不要關掉那個畫面。
+                let viewing_removed = self.detail
+                    && self
+                        .rows
+                        .get(self.table.selected().unwrap_or(0))
+                        .is_some_and(|row| row.id == job.id);
+                if viewing_removed {
+                    self.close_detail();
+                }
+                if self.tab == 0 {
+                    self.reload()?;
+                }
                 self.status = job.done;
             }
             Err(error) => self.status = format!("{}失敗：{error:#}", job.action),
@@ -5516,6 +5526,7 @@ mod tests {
         settle_mail(&mut app);
         assert!(app.status.contains("到 Archive"), "{}", app.status);
         assert!(app.rows.iter().all(|row| row.id != id));
+        assert!(!app.detail, "看著被移走的信時，完成後要關掉詳情");
         assert!(Store::open_reader(&dir).unwrap().get(&id).is_err());
 
         let victim = app.rows[app.table.selected().unwrap()].id.clone();
@@ -5527,5 +5538,47 @@ mod tests {
         for name in ["M2K_PASSWORD", "M2K_TEST_ROOT_CERT", "M2K_KEYCHAIN"] {
             std::env::remove_var(name);
         }
+    }
+
+    fn finish_mail_removal(app: &mut App, id: &str, done: &str) {
+        let (tx, rx) = mpsc::channel();
+        app.pending_mail = Some(MailJob {
+            id: id.to_owned(),
+            action: "移動".into(),
+            done: done.to_owned(),
+            receiver: rx,
+        });
+        tx.send(Ok(None)).unwrap();
+        assert!(app.poll_mail().unwrap());
+    }
+
+    #[test]
+    fn finished_move_keeps_a_different_open_mail_and_another_tab() {
+        let (temp, mut app) = demo_mail_app();
+        Store::open(temp.path())
+            .unwrap()
+            .remove("demo-mail-1")
+            .unwrap();
+        select_id(&mut app, "demo-mail-2");
+        app.open_detail().unwrap();
+        let body = app.rows[app.table.selected().unwrap()].text.clone();
+        assert!(body.contains("週三下午兩點"));
+        finish_mail_removal(&mut app, "demo-mail-1", "已移動「歡迎使用 m2k 原生工作台」");
+        assert!(app.detail, "另一封已開啟的郵件不該被關掉");
+        assert_eq!(app.rows[app.table.selected().unwrap()].text, body);
+        assert!(app.rows.iter().all(|row| row.id != "demo-mail-1"));
+        assert!(app.status.contains("已移動"));
+
+        select_id(&mut app, "demo-mail-2");
+        app.open_detail().unwrap();
+        app.switch(1).unwrap();
+        app.open_detail().unwrap();
+        let event = app.rows[app.table.selected().unwrap()].title.clone();
+        assert!(app.detail);
+        finish_mail_removal(&mut app, "demo-mail-2", "已刪除「本週產品同步會議」");
+        assert_eq!(app.tab, 1);
+        assert!(app.detail, "行事曆詳情不該被郵件移動完成關掉");
+        assert_eq!(app.rows[app.table.selected().unwrap()].title, event);
+        assert!(app.rows.iter().all(|row| row.kind == Kind::Calendar));
     }
 }

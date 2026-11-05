@@ -84,21 +84,21 @@ impl Flow {
 
     pub fn key(&mut self, code: KeyCode) -> Option<String> {
         match (&self.stage, code) {
-            (Stage::Saved | Stage::Unavailable(_), KeyCode::Char('b')) => {
+            (Stage::Saved | Stage::Unavailable(_), KeyCode::Char('b' | 'B')) => {
                 let args = self.book_args(true);
                 self.stage = Stage::Checking(spawn(&self.dir, move |dir| {
                     meeting::book(dir, args).map(|(output, _)| output)
                 }));
                 Some("正在 live 檢查會議室與個人行事曆（dry-run，不寫入）...".into())
             }
-            (Stage::ConfirmBook(_), KeyCode::Char('y')) => {
+            (Stage::ConfirmBook(_), KeyCode::Char('y' | 'Y')) => {
                 let args = self.book_args(false);
                 self.stage = Stage::Booking(spawn(&self.dir, move |dir| {
                     meeting::book(dir, args).map(|(output, _)| output)
                 }));
                 Some("正在預約：再次 live 檢查後寫入個人與會議室行事曆...".into())
             }
-            (Stage::Booked, KeyCode::Char('i')) => {
+            (Stage::Booked, KeyCode::Char('i' | 'I')) => {
                 let parsed = meeting::invite(
                     &self.dir,
                     InviteArgs {
@@ -118,7 +118,7 @@ impl Flow {
                     Err(error) => Some(format!("無法讀取邀請：{error:#}")),
                 }
             }
-            (Stage::ConfirmInvite(_), KeyCode::Char('y')) => {
+            (Stage::ConfirmInvite(_), KeyCode::Char('y' | 'Y')) => {
                 let file = self.draft.invitation.clone();
                 self.stage = Stage::Inviting(spawn(&self.dir, move |dir| {
                     meeting::invite(
@@ -370,5 +370,76 @@ mod tests {
             message.contains("下一步：m2k meeting book --file x --target room"),
             "{message}"
         );
+    }
+
+    fn draft(dir: &Path) -> Draft {
+        Draft {
+            uid: "u@m2k".into(),
+            title: "週會".into(),
+            attendees: vec!["a@example.test".into()],
+            start: "2026-12-01T02:00:00Z".into(),
+            end: "2026-12-01T03:00:00Z".into(),
+            room_url: "https://mail.example.test/room/".into(),
+            data_dir: dir.to_owned(),
+            invitation: dir.join("missing-invite.ics"),
+            manifest: dir.join("missing.json"),
+            actions: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn book_output() -> BookOutput {
+        BookOutput {
+            state: "complete".into(),
+            uid: Some("u@m2k".into()),
+            room: Some("第一會議室".into()),
+            target: "both".into(),
+            start: None,
+            end: None,
+            dry_run: true,
+            warnings: Vec::new(),
+            completed: Vec::new(),
+            failed: None,
+            remediation: None,
+            receipt: None,
+        }
+    }
+
+    fn wait_idle(flow: &mut Flow) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while flow.busy() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "room job did not finish"
+            );
+            let _ = flow.poll();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn caps_lock_starts_the_check_confirms_the_booking_and_sends_the_invite() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut flow = Flow::new(dir.path(), draft(dir.path()));
+        assert_eq!(flow.key(KeyCode::Char('Y')), None, "確認前 Y 不會寫入");
+        assert!(flow.key(KeyCode::Char('B')).unwrap().contains("live 檢查"));
+        wait_idle(&mut flow);
+
+        flow.stage = Stage::ConfirmBook(Box::new(book_output()));
+        assert!(flow.key(KeyCode::Char('Y')).unwrap().contains("正在預約"));
+        assert!(flow.writing());
+        wait_idle(&mut flow);
+
+        flow.stage = Stage::Booked;
+        assert!(
+            flow.key(KeyCode::Char('I'))
+                .unwrap()
+                .contains("無法讀取邀請"),
+            "Caps Lock 的 I 必須進入寄邀請"
+        );
+
+        flow.stage = Stage::ConfirmInvite(vec!["a@example.test".into()]);
+        assert!(flow.key(KeyCode::Char('Y')).unwrap().contains("寄送"));
+        assert!(flow.writing());
+        wait_idle(&mut flow);
     }
 }
