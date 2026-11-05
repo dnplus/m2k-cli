@@ -23,7 +23,6 @@ pub struct Output {
 pub trait Runner {
     fn run(&self, args: &[&str], stdin: Option<&[u8]>) -> Result<Output, Error>;
 
-    /// Keychain file appended to every command; `None` is the default keychain.
     fn keychain(&self) -> Option<&str> {
         None
     }
@@ -239,7 +238,6 @@ pub mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    /// Records calls and replays scripted outputs; never touches a keychain.
     pub struct FakeRunner {
         pub calls: RefCell<Vec<(Vec<String>, Option<String>)>>,
         pub outputs: RefCell<Vec<Output>>,
@@ -286,7 +284,6 @@ pub mod tests {
 
     #[test]
     fn reads_literal_and_hex_passwords_unambiguously() {
-        // A literal hex-looking password must stay literal.
         let runner = FakeRunner::new(vec![(0, "password: \"e4b8ad\"\n")]);
         assert_eq!(get(&runner, "m2k", "acct").unwrap(), "e4b8ad");
         let runner = FakeRunner::new(vec![(0, "password: 0xE4B8ADE69687 \n")]);
@@ -302,7 +299,6 @@ pub mod tests {
         );
     }
 
-    // An empty item would otherwise surface as an unrecognised format.
     #[test]
     fn empty_password_is_reported_as_empty() {
         for stderr in ["password: \n", "password: ", "password:\n"] {
@@ -363,8 +359,6 @@ pub mod tests {
         assert_eq!(runner.commands(), ["delete-generic-password"]);
     }
 
-    // A prompt nobody answers must not leave the child running after the
-    // caller has given up.
     #[cfg(unix)]
     #[test]
     fn timed_out_child_is_killed() {
@@ -387,8 +381,6 @@ pub mod tests {
         assert!(!alive.success(), "sleep {marker} is still running");
     }
 
-    /// Real `security` against a throwaway keychain file; the login keychain
-    /// is never read or written.
     #[cfg(target_os = "macos")]
     struct TempKeychain {
         _dir: tempfile::TempDir,
@@ -457,8 +449,6 @@ pub mod tests {
         ));
     }
 
-    // `add -U` alone keeps the creator's ACL; `set` must recreate the item so
-    // it trusts /usr/bin/security instead of the app that created it.
     #[cfg(target_os = "macos")]
     #[test]
     fn real_security_set_replaces_acl_of_item_created_by_another_app() {

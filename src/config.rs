@@ -74,7 +74,6 @@ impl Config {
         };
         validate_email(&email)?;
         let encoded_username = percent_encode_segment(&email);
-        // Record the selection so later loads never depend on auto-selection.
         let (site_profile, profile) =
             selected.unwrap_or_else(|| SiteProfile::named_for_host(&host));
         let carddav_url = profile.carddav_principal_url(&origin, &email);

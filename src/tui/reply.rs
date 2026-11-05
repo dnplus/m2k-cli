@@ -1,5 +1,3 @@
-//! TUI 回覆草稿的狀態機：不碰終端或檔案，副作用由 `App` 依 `Action` 執行。
-
 use crate::mail_reply::{self, ReplyHeaders};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
@@ -10,9 +8,7 @@ pub enum Phase {
     Editing,
     /// 外部編輯器執行中；此時終端已交給編輯器，不會收到按鍵。
     External,
-    /// 編輯完成，等使用者確認寄出／存草稿／繼續編輯。
     Confirm,
-    /// SMTP 寄送中，忽略按鍵。
     Sending,
 }
 
@@ -23,9 +19,8 @@ pub enum Action {
     Save {
         close: bool,
     },
-    /// 先存草稿，再走 CLI 相同的寄送路徑。
+    /// 先存草稿再寄送。
     Send,
-    /// 重新開啟外部編輯器。
     Edit,
 }
 

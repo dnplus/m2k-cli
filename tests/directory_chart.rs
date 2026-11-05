@@ -41,7 +41,6 @@ fn contact(id: &str, path: &str, uid: &str, name: &str, extra: &str) -> Item {
     }
 }
 
-/// ACME 是全公司名單（每個人都在），ENG／ENG/TOOLS／MKT 才是部門；集合只放直屬成員。
 fn directory() -> (Vec<Collection>, Vec<Item>) {
     let collections = ["ACME", "ACME/ENG", "ACME/ENG/TOOLS", "ACME/MKT"]
         .into_iter()
@@ -53,7 +52,6 @@ fn directory() -> (Vec<Collection>, Vec<Item>) {
         contact("3", "ACME/ENG", "lin", "林工程", "TITLE:協理\n"),
         contact("4", "ACME", "chen", "陳工具", ""),
         contact("5", "ACME/ENG/TOOLS", "chen", "陳工具", ""),
-        // 一人兼兩個部門，兩邊都要列出，但總人數只算一次。
         contact("6", "ACME", "wu", "吳兼任", ""),
         contact("7", "ACME/ENG/TOOLS", "wu", "吳兼任", ""),
         contact("8", "ACME/MKT", "wu", "吳兼任", ""),
@@ -75,7 +73,6 @@ fn names(members: &[m2k::directory_chart::Member]) -> Vec<&str> {
 
 #[test]
 fn chart_is_identical_regardless_of_collection_and_contact_order() {
-    // 代理程式拿圖當脈絡，同一份快取每次都要得到逐字相同的輸出，否則會被誤判成組織異動。
     let (collections, items) = directory();
     let expected = chart(&collections, &items, None);
     let mut reversed_collections = collections.clone();
@@ -90,7 +87,6 @@ fn chart_is_identical_regardless_of_collection_and_contact_order() {
     ] {
         let nodes = address_book_tree(cols, Some(BASE));
         let mut contacts = merge_contact_items(its, &nodes);
-        // merge_contact_items 本身已排序；直接打亂 build 的輸入，才驗得到 build 自己的排序。
         contacts.reverse();
         let mut nodes = nodes;
         nodes.reverse();
@@ -110,7 +106,6 @@ fn members_sit_in_their_departments_not_in_the_company_wide_list() {
     let chart = chart(&collections, &items, None);
     assert_eq!(chart.departments.len(), 1);
     let acme = &chart.departments[0];
-    // 只在全公司名單、沒有部門的人才留在最上層。
     assert_eq!(names(&acme.members), ["王大同"]);
     let child_paths = acme
         .children
@@ -148,7 +143,6 @@ fn branch_keeps_only_that_subtree() {
         "company list leaked: {markdown}"
     );
 
-    // 用部門名稱指定也行，結果與 path 相同。
     let by_name = chart(&collections, &items, Some("TOOLS"));
     assert_eq!(by_name.branch.as_deref(), Some("ACME/ENG/TOOLS"));
     assert_eq!(names(&by_name.departments[0].members), ["吳兼任", "陳工具"]);
@@ -161,7 +155,6 @@ fn branch_keeps_only_that_subtree() {
 
 #[test]
 fn outputs_say_there_are_no_reporting_lines_and_draw_department_edges() {
-    // vCard 沒有主管欄位；圖若不講明，代理程式會把部門樹誤讀成匯報關係。
     let (collections, items) = directory();
     let chart = chart(&collections, &items, None);
     let json = serde_json::to_value(&chart).unwrap();
@@ -180,7 +173,6 @@ fn outputs_say_there_are_no_reporting_lines_and_draw_department_edges() {
 
 #[test]
 fn cli_reads_only_the_local_cache() {
-    // 沒有 config 也沒有密碼：指令若嘗試連線就會失敗，成功即代表只讀本機。
     let dir = TempDir::new().unwrap();
     let (collections, items) = directory();
     Store::open(dir.path())
@@ -217,7 +209,6 @@ fn cli_reads_only_the_local_cache() {
     assert!(run(&["directory", "chart", "--format", "mermaid"]).starts_with("flowchart TD"));
 }
 
-/// Mail2000 的實際形狀：FN 與 NICKNAME 都是帳號，中文全名只在 N 的名字欄。
 fn mail2000_contact(id: &str, path: &str, uid: &str, full_name: &str, phone: &str) -> Item {
     let mut item = contact(id, path, uid, uid, &format!("N:;{full_name};;;\n"));
     if !phone.is_empty() {
@@ -228,7 +219,6 @@ fn mail2000_contact(id: &str, path: &str, uid: &str, full_name: &str, phone: &st
 
 #[test]
 fn members_show_the_chinese_full_name_not_just_the_account() {
-    // 只有帳號時代理程式對不上信件裡的中文署名；全名在 vCard N，帳號仍要留著才能寄信。
     let collections = ["ACME", "ACME/ENG"]
         .into_iter()
         .map(collection)
@@ -266,7 +256,6 @@ fn members_show_the_chinese_full_name_not_just_the_account() {
         "{markdown}"
     );
     assert!(markdown.contains("  - nobody\n"), "{markdown}");
-    // 網域不同的 email 推不出來，必須照列。
     assert!(
         markdown.contains("  - 李外包（lee） · 電話 0912345678 · lee@partner.test\n"),
         "{markdown}"

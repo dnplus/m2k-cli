@@ -1,6 +1,3 @@
-//! 部門組織圖：從本機快取的通訊錄分支與聯絡人，確定性地輸出部門樹與各部門成員，作為代理程式的參考脈絡。
-//! 不呼叫模型、不連線；相同快取必得相同輸出，與聯絡人或分支的讀取順序無關。
-
 use crate::{
     directory::{self, DirectoryContact, DirectoryNode},
     model::Kind,
@@ -105,7 +102,6 @@ pub fn build(
     contacts: &[DirectoryContact],
     branch: Option<&str>,
 ) -> Result<OrgChart> {
-    // 空 path 是通訊錄主目錄本身，不是部門。
     let mut nodes = nodes
         .iter()
         .filter(|node| !node.path.is_empty())
@@ -163,7 +159,6 @@ pub fn build(
             Some(parent) if depth_by_path.contains_key(parent) => {
                 children.entry(parent).or_default().push(node)
             }
-            // 父節點不在快取時，把它當成最上層，不讓分支消失。
             _ => roots.push(node),
         }
     }
@@ -202,7 +197,6 @@ pub fn build(
             }
         }
     }
-    // 票數相同時取字典序較小者，結果與輸入順序無關。
     let email_domain = domains
         .into_iter()
         .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)))
@@ -306,12 +300,13 @@ fn markdown_department(
     }
 }
 
-/// 6 位數以內的純數字是公司分機。
+const MAX_EXTENSION_DIGITS: usize = 6;
+
 fn phone_label(phones: &[String]) -> String {
     phones
         .iter()
         .map(|phone| {
-            if phone.len() <= 6 && phone.chars().all(|c| c.is_ascii_digit()) {
+            if phone.len() <= MAX_EXTENSION_DIGITS && phone.chars().all(|c| c.is_ascii_digit()) {
                 format!("分機 {phone}")
             } else {
                 format!("電話 {phone}")

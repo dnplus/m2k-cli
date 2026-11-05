@@ -1,6 +1,3 @@
-//! 個人行事曆事件的欄位式建立與修改：產生或改寫 ICS，再交給 [`crate::dav_write`]。
-//! 只處理自己主辦、單次、位於自己行事曆的事件；其他一律拒絕並說明原因。
-
 use crate::{
     config::Config,
     human_time,
@@ -218,7 +215,6 @@ pub fn build_new(input: &EventInput, now: DateTime<Utc>) -> Result<String> {
     Ok(finish(&lines))
 }
 
-/// 已解析的單一 VEVENT 欄位，供表單預填與檢查。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventFields {
     pub title: String,
@@ -264,7 +260,6 @@ fn unfold(raw: &str) -> Vec<String> {
     lines
 }
 
-/// VEVENT 第一層（不含 VALARM 等子元件）的邏輯行範圍。
 fn event_lines(lines: &[String]) -> Result<(usize, usize)> {
     let starts = lines
         .iter()
@@ -286,7 +281,6 @@ fn event_lines(lines: &[String]) -> Result<(usize, usize)> {
     }
 }
 
-/// 回傳 VEVENT 第一層屬性在 `lines` 中的索引。
 fn top_level(lines: &[String], (start, end): (usize, usize)) -> Vec<usize> {
     let mut depth = 0usize;
     let mut indexes = Vec::new();
@@ -345,8 +339,7 @@ fn parse_duration(value: &str) -> Option<Duration> {
     (any && time == time_any).then_some(if negative { -total } else { total })
 }
 
-/// 解析 VEVENT 的起迄；沒有 DTEND 時用 DURATION。DURATION 無法解析時失敗，
-/// 避免猜錯長度後把結束時間改掉。
+/// 解析 VEVENT 的起迄；沒有 DTEND 時用 DURATION，DURATION 無法解析時失敗。
 fn parse_when(lines: &[String], props: &[usize]) -> Result<Option<When>> {
     let find = |name: &str| {
         props
@@ -567,8 +560,6 @@ pub fn check_editable(config: &Config, item: &Item) -> std::result::Result<(), S
             }
         }
     }
-    // 自己主辦的會議（meeting book）同一份 ICS 也在會議室與與會者那邊；
-    // 只改自己這份會留下會議室預約，與會者也收不到更新或取消。
     let others = props
         .iter()
         .filter(|index| name_of(&lines[**index]).eq_ignore_ascii_case("ATTENDEE"))
@@ -584,7 +575,6 @@ pub fn check_editable(config: &Config, item: &Item) -> std::result::Result<(), S
     Ok(())
 }
 
-/// `mailto:` 位址（大小寫不拘）去掉 scheme 並 trim；其他值原樣回傳。
 fn address(value: &str) -> &str {
     let value = value.trim();
     value
@@ -620,7 +610,6 @@ fn attendee_email(line: &str) -> String {
 }
 
 /// 集合是否在自己的行事曆 home（`caldav_url` 的上一層）之下。
-/// 非 URL 的集合 ID（展示資料）視為自己的行事曆。
 pub fn own_collection(config: &Config, collection: &str) -> bool {
     if Url::parse(collection.trim()).is_err() {
         return true;
@@ -998,7 +987,6 @@ mod tests {
             "P9999999999999999W",
             "PT9223372036854775807S",
             "P1DT",
-            // Each part fits in a Duration; only their sum overflows.
             "P9000000000W9000000000W",
         ] {
             let raw = BASE.replace(
@@ -1025,7 +1013,6 @@ mod tests {
             .unwrap();
             assert!(renamed.contains(&format!("DURATION:{value}\r\n")));
         }
-        // All-day events add the duration to a NaiveDate, a separate overflow path.
         let all_day = BASE
             .replace(
                 "DTSTART;TZID=Asia/Taipei:20261022T140000",

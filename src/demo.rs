@@ -159,8 +159,6 @@ fn seed_with(data_dir: &Path, rooms: bool) -> Result<()> {
     Ok(())
 }
 
-/// Offline room calendars for `meeting rooms --site 北區` on tomorrow 10:00-11:00 (+08:00):
-/// 北區甲室 is free, 北區乙室 is busy 10:30-11:30, other rooms stay unknown (no cache).
 fn room_events(
     cfg: &config::Config,
     now: chrono::DateTime<Utc>,

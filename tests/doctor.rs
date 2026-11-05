@@ -9,8 +9,6 @@ use std::{
     thread,
 };
 
-// A keychain file that does not exist: m2k must never read or write the
-// login keychain from tests.
 const NO_KEYCHAIN: &str = "/nonexistent/m2k-test.keychain-db";
 
 const SECRET: &str = "doctor-secret-pw-9731";
@@ -66,8 +64,6 @@ fn closed_port() -> u16 {
         .port()
 }
 
-/// Loopback DAV fixture: answers every request with one calendar and one
-/// address book, and records request methods so tests can prove it stayed read-only.
 fn dav_fixture() -> (u16, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();

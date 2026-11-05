@@ -109,8 +109,6 @@ mod tests {
         assert_eq!(progress.count, 10);
     }
 
-    /// A child forked while the lock is held keeps a duplicate of the open file
-    /// description until it execs; dropping the lock must still release it.
     #[test]
     fn dropping_the_lock_releases_it_even_if_a_forked_copy_of_the_fd_lives() {
         let temp = tempfile::tempdir().unwrap();

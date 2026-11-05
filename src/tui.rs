@@ -495,7 +495,6 @@ impl App {
         self.reply = Some(flow);
     }
 
-    /// 保存目前草稿；失敗時留在流程內顯示原因，不丟文字。
     fn save_reply(&mut self) -> bool {
         let Some(flow) = self.reply.as_mut() else {
             return false;
@@ -592,7 +591,6 @@ impl App {
         true
     }
 
-    /// 外部編輯器結束後讀回草稿；失敗時關閉流程，草稿檔保留。
     fn editor_finished(&mut self, result: io::Result<std::process::ExitStatus>) {
         let Some(flow) = self.reply.as_mut() else {
             return;
@@ -627,7 +625,6 @@ impl App {
         self.dir.join(".demo").exists()
     }
 
-    /// 新增事件：預填選取活動當天（或視窗內今天／第一天）的第一個空白整點。
     fn start_event_create(&mut self) {
         let today = Utc::now()
             .with_timezone(&chrono_tz::Asia::Taipei)
@@ -656,7 +653,6 @@ impl App {
         self.event_form = Some(form);
     }
 
-    /// 編輯或刪除選取事件；不能修改的事件只在狀態列說明原因。
     fn start_event(&mut self, mode: event_form::Mode) {
         let Some(item) = self
             .table
@@ -2170,7 +2166,6 @@ pub fn run(data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 暫時交出終端給 `$EDITOR`，無論編輯器成敗都還原 raw mode、alternate screen 與滑鼠捕捉。
 fn run_editor(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     editor: &str,
@@ -2466,7 +2461,6 @@ mod tests {
     use chrono::Utc;
     use tempfile::tempdir;
 
-    /// 會設定 `M2K_PASSWORD` 的測試互斥執行，避免互相覆蓋環境變數。
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
@@ -3168,7 +3162,6 @@ mod tests {
             .key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
             .unwrap();
         assert!(!quit && app.status.contains("寄送中"));
-        // The footer also paints `status`; clear it so only the overlay can satisfy the check.
         app.status = "其他狀態".into();
         let mut terminal = Terminal::new(TestBackend::new(120, 32)).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
@@ -3943,7 +3936,6 @@ mod tests {
         assert_eq!(stored.title, "m2k 骨架驗收", "nothing changed locally");
     }
 
-    /// 行事曆寫入完成前持續 poll，模擬事件迴圈。
     fn settle_event(app: &mut App) {
         let deadline = Instant::now() + Duration::from_secs(15);
         while app.pending_event.is_some() {
@@ -3991,7 +3983,6 @@ mod tests {
         let mut app = App::new(&dir).unwrap();
         app.switch(1).unwrap();
 
-        // 新增：表單 → 確認 → y，伺服器收到不含 METHOD 的新 ICS。
         type_keys(&mut app, &[KeyCode::Char('n')]);
         for c in "TUI 新增".chars() {
             type_keys(&mut app, &[KeyCode::Char(c)]);
@@ -4018,7 +4009,6 @@ mod tests {
         let selected = app.rows[app.table.selected().expect("new event selected")].clone();
         assert_eq!(selected.title, "TUI 新增");
 
-        // 編輯：只改地點，保留 UID 與標題，用剛取得的 ETag。
         type_keys(
             &mut app,
             &[KeyCode::Char('e'), KeyCode::Tab, KeyCode::Tab, KeyCode::Tab],
@@ -4045,7 +4035,6 @@ mod tests {
                 .to_owned()
         ));
 
-        // 別的客戶端先改了伺服器版本：刪除用舊 ETag，必須被拒絕且保留表單。
         let current = Store::open_reader(&dir).unwrap().get(&selected.id).unwrap();
         let response = reqwest::blocking::Client::new()
             .put(&current.remote_id)
@@ -4057,7 +4046,6 @@ mod tests {
             .unwrap();
         assert!(response.status().is_success());
 
-        // 舊 ETag 的編輯被拒絕：輸入保留，更新後再按 e 只帶回自己改的標題。
         let puts_before = fixture_events(&info, "dav.put").len();
         type_keys(&mut app, &[KeyCode::Char('e')]);
         for c in "改".chars() {
@@ -4099,7 +4087,6 @@ mod tests {
         type_keys(&mut app, &[KeyCode::Esc]);
         assert!(app.kept_event.is_none());
 
-        // 刪除用過期 ETag 同樣被拒絕。
         let current = Store::open_reader(&dir).unwrap().get(&selected.id).unwrap();
         reqwest::blocking::Client::new()
             .put(&current.remote_id)
@@ -4122,7 +4109,6 @@ mod tests {
         assert!(fixture_events(&info, "dav.delete").is_empty());
         type_keys(&mut app, &[KeyCode::Esc]);
 
-        // 更新後再刪除：伺服器收到 DELETE，本機快取移除。
         sync::run(&dir, &[Kind::Calendar]).unwrap();
         app.reload().unwrap();
         let index = app

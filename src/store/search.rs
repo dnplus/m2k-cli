@@ -3,8 +3,6 @@ use super::*;
 /// Trigram needs three characters to produce a token; shorter queries scan.
 const MIN_INDEXED_CHARS: usize = 3;
 
-/// Columns whose change must rewrite the index row. `last_seen`, `etag` and
-/// `flags_json` change on every sync and are not searched.
 const SEARCHED_COLUMNS: [&str; 13] = [
     "kind",
     "id",
@@ -69,8 +67,6 @@ pub(super) fn initialize(conn: &Connection, rebuild: bool) -> Result<()> {
     Ok(())
 }
 
-/// One newline-joined document per item. It is a superset of what the exact
-/// `m2k_contains` predicate checks, so candidates are always re-verified.
 fn document(row: &str) -> String {
     let json_text = |column: &str, key: Option<&str>| {
         let key = key.map_or(String::new(), |key| format!(" AND key = '{key}'"));
@@ -95,8 +91,6 @@ fn document(row: &str) -> String {
     parts.join(" || char(10) || ")
 }
 
-/// True when opening an existing pre-index database must tokenize cached
-/// items, which takes tens of seconds on a large mailbox.
 pub(super) fn backfill_is_slow(conn: &Connection, version: i64) -> Result<bool> {
     if version == 0 || version >= 4 {
         return Ok(false);
@@ -104,13 +98,11 @@ pub(super) fn backfill_is_slow(conn: &Connection, version: i64) -> Result<bool> 
     Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM items)", [], |row| row.get(0))?)
 }
 
-/// Wraps the exact predicate with an index lookup when the query is long
-/// enough for trigram. `fts_index` is the bind slot for the phrase.
-pub(super) fn indexed_predicate(query: &str, exact: &str, fts_index: usize) -> Option<String> {
+pub(super) fn indexed_predicate(query: &str, exact: &str, bind_slot: usize) -> Option<String> {
     (query.chars().count() >= MIN_INDEXED_CHARS).then(|| {
         format!(
             "(items.rowid IN (
-                 SELECT rowid FROM items_search WHERE items_search MATCH ?{fts_index}
+                 SELECT rowid FROM items_search WHERE items_search MATCH ?{bind_slot}
              ) AND {exact})"
         )
     })

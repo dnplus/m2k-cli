@@ -1262,7 +1262,6 @@ pub fn department_from_memberships(memberships: &[DirectoryMembership]) -> Optio
         if segments.is_empty() {
             continue;
         }
-        // The top-level address book is the directory root (the company), not a department.
         if segments.len() == 1 {
             continue;
         }

@@ -1,7 +1,3 @@
-//! 共用企業通訊錄快取：把本機快取的公司通訊錄分支匯出成單一 JSON 檔，
-//! 讓其他資料目錄（例如每位使用者的 sandbox）透過 `M2K_DIRECTORY_CACHE` 匯入，
-//! 不必各自花十幾分鐘完整同步。
-
 use crate::{
     directory::{self, DirectoryNode},
     model::{Collection, Item, Kind, Snapshot},
@@ -42,7 +38,6 @@ pub struct DirectoryCacheFile {
     pub items: Vec<Item>,
 }
 
-/// Only the header, so an already-imported file is not decoded in full.
 #[derive(Deserialize)]
 struct Header {
     format: String,

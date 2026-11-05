@@ -683,8 +683,6 @@ fn discovery_of_only_denied_collection_reports_href_and_permission() {
 
 #[test]
 fn percent_encoded_at_hrefs_stay_inside_discovered_collection() {
-    // m2k's default caldav_url encodes the mailbox as `%40`, and Mail2000 echoes that form in
-    // REPORT hrefs; the canonical collection id decodes it to `@`, so containment must match both.
     let discovery = multistatus([calendar_collection(
         "/cal/user%40example.test/default/",
         "個人行事曆",

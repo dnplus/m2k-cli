@@ -377,9 +377,7 @@ pub fn build_rsvp_reply(
 }
 
 struct Property {
-    /// The whole unfolded line, copied verbatim into the reply.
     raw: String,
-    /// Name plus parameters, e.g. `DTSTART;TZID=Asia/Taipei`.
     key: String,
     name: String,
     value: String,

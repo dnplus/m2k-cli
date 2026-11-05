@@ -1,6 +1,3 @@
-//! `calendar create|update|delete` 的欄位寫法，用實際 binary 對 loopback fixture 驗證：
-//! 伺服器收到的 ICS、UID 與其他屬性保留、ETag 衝突拒絕，以及不能改的事件不會發出 PUT。
-
 #[path = "../examples/m2k_fixture/fixture.rs"]
 mod fixture;
 
@@ -55,7 +52,6 @@ fn body(info: &fixture::Info, event: &Value) -> String {
     std::fs::read_to_string(info.data_dir.join(event["file"].as_str().expect("file"))).unwrap()
 }
 
-/// 只設定行事曆需要的帳號並同步；IMAP／SMTP 不在這裡驗證。
 fn client(root: &Path, info: &fixture::Info, name: &str) -> std::path::PathBuf {
     let data = root.join(name);
     ok(
@@ -81,7 +77,6 @@ fn field_based_crud_writes_correct_ics_and_honours_etag() {
     .expect("start fixture");
     let a = client(root.path(), &info, "a");
 
-    // 必填欄位不足時在連線前就失敗，不會 PUT。
     failed(
         &a,
         &[
@@ -140,7 +135,6 @@ fn field_based_crud_writes_correct_ics_and_honours_etag() {
     }
     assert!(!raw.contains("METHOD") && !raw.contains("ORGANIZER"));
 
-    // 只改標題與開始：UID、地點、說明保留，長度沿用 90 分鐘。
     let updated = ok(
         &a,
         &[
@@ -169,7 +163,6 @@ fn field_based_crud_writes_correct_ics_and_honours_etag() {
         assert!(raw.contains(expected), "{expected:?} missing in\n{raw}");
     }
 
-    // 全天：--end 是最後一天（含），ICS DTEND 為隔天。
     ok(
         &a,
         &[
@@ -187,7 +180,6 @@ fn field_based_crud_writes_correct_ics_and_honours_etag() {
         "{raw}"
     );
 
-    // 另一個客戶端先更新：a 手上的 ETag 過期，更新與刪除都被伺服器拒絕。
     let b = client(root.path(), &info, "b");
     ok(&b, &["calendar", "update", &id, "--location", "B 端"]);
     let before = events(&info, "dav.put").len();
@@ -202,7 +194,6 @@ fn field_based_crud_writes_correct_ics_and_honours_etag() {
     );
     assert!(events(&info, "dav.delete").is_empty());
 
-    // 同步取得新 ETag 後刪除成功，本機快取也移除。
     ok(&a, &["sync", "--kind", "calendar"]);
     assert_eq!(ok(&a, &["calendar", "delete", &id])["deleted"], id.as_str());
     let deletes = events(&info, "dav.delete");
@@ -254,7 +245,6 @@ fn recurring_and_invited_events_are_refused_without_a_put() {
         assert!(error.contains(reason), "{error}");
         assert_eq!(events(&info, "dav.put").len(), before);
     }
-    // --file 與欄位不能混用；update 至少要一個欄位，兩者都是參數錯誤（exit 2）。
     for args in [
         &["calendar", "create", "--file", "x.ics", "--title", "混用"][..],
         &["calendar", "update", "some-id"][..],
@@ -271,7 +261,6 @@ fn recurring_and_invited_events_are_refused_without_a_put() {
         assert_eq!(json["error"]["code"], "invalid_arguments");
     }
 
-    // 欄位建立不能指定會議室行事曆；--file 維持原本行為不檢查。
     let before = events(&info, "dav.put").len();
     let error = failed(
         &a,

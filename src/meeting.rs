@@ -2031,7 +2031,6 @@ fn room_calendar_url(config: &Config, profile: &SiteProfile, access_name: &str) 
     )
 }
 
-/// Validate `--site` against the site profile of the configured account.
 pub(crate) fn validate_site(data_dir: &Path, value: Option<&str>) -> Result<()> {
     if value.is_none() {
         return Ok(());

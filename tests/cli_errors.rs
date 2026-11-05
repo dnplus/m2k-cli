@@ -2,8 +2,6 @@ use m2k::{demo, sync};
 use serde_json::Value;
 use std::process::Command;
 
-// A keychain file that does not exist: m2k must never read or write the
-// login keychain from tests.
 const NO_KEYCHAIN: &str = "/nonexistent/m2k-test.keychain-db";
 
 fn failure(dir: &std::path::Path, args: &[&str], status: i32) -> Value {
@@ -90,8 +88,6 @@ fn mail_reply_reads_password_before_body_file_on_non_demo_dir() {
 
 #[test]
 fn mail_reply_cli_keeps_error_code_and_text_with_a_short_password() {
-    // A one-letter password used to be masked out of CLI errors, turning
-    // not_found into operation_failed and "/nonexistent" into "/n[已隱藏]nexistent".
     let temp = tempfile::tempdir().unwrap();
     demo::seed(temp.path()).unwrap();
     std::fs::remove_file(temp.path().join(".demo")).unwrap();

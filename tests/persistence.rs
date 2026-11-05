@@ -652,7 +652,6 @@ fn legacy_dav_identity_accepts_equivalent_urls_but_rejects_other_changes() {
     store
         .upsert(&item(Kind::Calendar, "identity-fixture", "fixture"))
         .unwrap();
-    // Simulate metadata written by the old version, before normalization existed.
     let conn = Connection::open(store.database_path()).unwrap();
     for (key, value) in [
         ("account.caldav_url", &old.caldav_url),

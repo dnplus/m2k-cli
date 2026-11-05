@@ -1,11 +1,3 @@
-//! Site profiles: everything that differs between Mail2000 installations.
-//!
-//! A profile is selected by `Config::site_profile`: a builtin name, the name of
-//! a user profile at `<data-dir>/site-profiles/<name>.json`, or a path to a
-//! JSON file. `init` always records the selected name. Configs written before
-//! that have none: the builtin or user profile whose `server` equals the
-//! configured IMAP host is used, falling back to the generic Mail2000 profile.
-
 use crate::config::Config;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -24,8 +16,6 @@ const BUILTIN_PROFILES: &[(&str, &str)] = &[
 
 static USER_PROFILES: OnceLock<PathBuf> = OnceLock::new();
 
-/// Use `<data_dir>/site-profiles` for user profiles; the binary calls this
-/// once at startup.
 pub fn set_data_dir(data_dir: &Path) {
     let _ = USER_PROFILES.set(data_dir.join(USER_PROFILE_DIR));
 }
@@ -46,7 +36,6 @@ fn user_profile_dir_text() -> String {
         .unwrap_or_else(|| format!("<data-dir>/{USER_PROFILE_DIR}"))
 }
 
-/// A bare profile name (no path or extension) names a user profile file.
 fn is_profile_name(spec: &str) -> bool {
     !spec.is_empty()
         && spec
@@ -235,7 +224,6 @@ impl SiteProfile {
         paths
     }
 
-    /// Valid user profiles with the name (file stem) that selects them.
     fn user_profiles() -> Vec<(String, Self)> {
         Self::user_profile_files()
             .iter()

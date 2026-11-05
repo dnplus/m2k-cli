@@ -711,7 +711,6 @@ fn calendar_command(dir: &Path, cmd: CalendarCommand, json: bool) -> Result<()> 
             collection,
             fields,
         } => {
-            // 欄位在連線前就驗證；--file 維持原本「鎖與連線檢查之後才讀檔」的順序。
             let built = match file {
                 Some(_) => None,
                 None => Some(calendar_event::build_new(&fields.into_input(), Utc::now())?),

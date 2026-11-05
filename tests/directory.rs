@@ -18,8 +18,6 @@ use std::{
 };
 use tempfile::TempDir;
 
-// A keychain file that does not exist: m2k must never read or write the
-// login keychain from tests.
 const NO_KEYCHAIN: &str = "/nonexistent/m2k-test.keychain-db";
 
 static PASSWORD_LOCK: Mutex<()> = Mutex::new(());
@@ -91,13 +89,11 @@ fn shared_directory_cache_exports_company_branch_and_imports_authoritatively() {
     let output = source.path().join("shared").join("dir.json");
     std::fs::create_dir_all(output.parent().unwrap()).unwrap();
     let exported = m2k::directory_cache::export(source.path(), &output, Some("EMP")).unwrap();
-    // The personal address book must never leak into a file shared with other users.
     assert_eq!((exported.collections, exported.items), (2, 3));
     let text = std::fs::read_to_string(&output).unwrap();
     assert!(!text.contains("Private Friend"));
     assert!(text.contains("\"format\":\"m2k-directory/1\""));
 
-    // A user's own data dir already has a stale copy of Carol plus a private contact.
     let target = TempDir::new().unwrap();
     seed_company_directory(
         target.path(),
@@ -116,7 +112,6 @@ fn shared_directory_cache_exports_company_branch_and_imports_authoritatively() {
         .map(|item| item.title)
         .collect::<Vec<_>>();
     names.sort();
-    // Snapshot semantics: the departed employee is gone, the private book is untouched.
     assert_eq!(names, ["Alice", "Bob", "Carol", "Private Friend"]);
     drop(store);
     assert_eq!(
@@ -125,7 +120,6 @@ fn shared_directory_cache_exports_company_branch_and_imports_authoritatively() {
         "the same file must not be re-imported on every lookup"
     );
 
-    // A newer export after Carol left removes her on the next lookup.
     std::thread::sleep(std::time::Duration::from_millis(5));
     seed_company_directory(
         source.path(),
@@ -506,7 +500,6 @@ fn default_self_queries_root_once_without_scanning_sibling_branches() {
         ResponseSpec { body: report },
     ]);
     let base = format!("http://{address}");
-    // The company root comes from the site profile, so OTHER is never scanned.
     let profile_dir = TempDir::new().unwrap();
     let profile = profile_dir.path().join("acme.json");
     std::fs::write(
@@ -707,9 +700,6 @@ fn company_sync_completeness_bfs_finds_leaves_missed_by_shallow_infinity() {
 
 #[test]
 fn company_sync_replaces_cache_written_under_legacy_collection_encoding() {
-    // Caches written before collection ids were canonicalized keep the
-    // server's lowercase `%3d` escapes. A resync must take over those rows
-    // instead of failing on the reused item id or keeping a duplicate branch.
     let _password_guard = PASSWORD_LOCK.lock().expect("password lock");
     let principal = multistatus([principal_response("/carddav/home/")]);
     let home = multistatus([addressbook_response(

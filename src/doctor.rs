@@ -1,5 +1,3 @@
-//! 唯讀環境診斷：回答「這台機器、這個帳號能不能開始正式驗收」。
-//!
 //! 只做讀取：不建立檔案或目錄、不寄信、不改旗標、不寫行事曆，
 //! 錯誤訊息一律先遮蔽密碼。
 
@@ -285,7 +283,6 @@ fn dav(cfg: &Config, password: &str, kind: Kind, url: &str) -> Result<String> {
     ))
 }
 
-/// Informational only: a server without RFC 6578 keeps the ETag strategy.
 fn calendar_sync_token(cfg: &Config, password: &str) -> String {
     match provider::dav::probe_calendar_sync_tokens(cfg, password) {
         Ok((supported, total)) if supported == total && total > 0 => {

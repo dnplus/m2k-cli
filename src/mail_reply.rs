@@ -1,5 +1,3 @@
-//! 回覆郵件：CLI `mail reply` 與 TUI 回覆草稿共用的收件人／主旨判定、寄送路徑與草稿檔。
-
 use crate::{
     config, local_state,
     model::{Item, Kind, OutgoingMail},
@@ -11,14 +9,13 @@ use anyhow::{bail, Context, Result};
 use mailparse::MailHeaderMap;
 use std::path::{Path, PathBuf};
 
-/// 使用者在 TUI 編輯後的收件人與主旨；CLI 不覆寫，沿用原信判定。
 #[derive(Debug)]
 pub struct ReplyHeaders {
     pub to: Vec<String>,
     pub subject: String,
 }
 
-/// 依原信判定回覆信（正文與附件留空由呼叫端填入）。CLI 與 TUI 共用。
+/// 依原信判定回覆信；正文與附件留空由呼叫端填入。
 pub fn reply_mail(item: &Item) -> Result<OutgoingMail> {
     let bytes = provider::mail::raw_bytes(item)?;
     let parsed = mailparse::parse_mail(&bytes)?;
@@ -56,7 +53,7 @@ fn addresses(value: &str) -> Result<Vec<String>> {
     Ok(output)
 }
 
-/// 寄出回覆：`m2k mail reply` 與 TUI 共用的唯一寄送路徑，不重試。
+/// 寄出回覆，不重試。
 pub fn send_reply(
     dir: &Path,
     id: &str,
@@ -79,14 +76,12 @@ pub fn send_reply(
     let cfg = config::load(dir)?;
     let pass = config::password(&cfg)?;
     let mut mail = reply_mail(&item)?;
-    // 與舊 CLI 流程相同：解析完原信才讀正文。
     mail.body = read_body()?;
     mail.attachments = attachments;
     if let Some(headers) = headers {
         mail.to = headers.to;
         mail.subject = headers.subject;
     }
-    // CLI 路徑原樣回傳錯誤（與舊行為一致）；密碼遮罩只在 TUI 顯示時做，見 `masked_error`。
     provider::mail::send(&cfg, &pass, &mail)
 }
 
@@ -148,7 +143,6 @@ pub fn compose_draft(item: &Item) -> Result<String> {
     ))
 }
 
-/// 解析編輯後的草稿；回傳可直接寄送的標頭與正文。
 pub fn parse_draft(text: &str) -> Result<(ReplyHeaders, String)> {
     let text = text.replace("\r\n", "\n");
     let (head, body) = match text.split_once("\n\n") {
@@ -296,7 +290,6 @@ mod tests {
     fn check_order_matches_old_cli_body_is_read_last() {
         let temp = tempfile::tempdir().unwrap();
         crate::demo::seed(temp.path()).unwrap();
-        // 找不到郵件優先於讀正文。
         let error = send_reply(
             temp.path(),
             "no-such-id",
@@ -306,7 +299,6 @@ mod tests {
         )
         .unwrap_err();
         assert!(!format!("{error:#}").contains("展示資料"), "{error:#}");
-        // demo 拒絕優先於讀正文。
         let error = send_reply(
             temp.path(),
             "demo-mail-2",

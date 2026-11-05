@@ -530,7 +530,7 @@ pub fn sync_calendar_full(
 }
 
 /// Probes whether every configured calendar collection supports RFC 6578
-/// `sync-collection`; returns (supported, total). Read-only, for `doctor`.
+/// `sync-collection`; returns (supported, total). Read-only.
 pub fn probe_calendar_sync_tokens(config: &Config, password: &str) -> Result<(usize, usize)> {
     let configured = configured_url(config, Kind::Calendar)?;
     let client = build_client()?;

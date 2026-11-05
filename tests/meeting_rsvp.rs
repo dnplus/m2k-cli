@@ -8,8 +8,6 @@ use m2k::{
 use serde_json::Value;
 use std::process::Command;
 
-// A keychain file that does not exist: m2k must never read or write the
-// login keychain from tests.
 const NO_KEYCHAIN: &str = "/nonexistent/m2k-test.keychain-db";
 
 const ME: &str = "alice@example.test";
@@ -18,8 +16,6 @@ fn now() -> chrono::DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 10, 19, 1, 2, 3).unwrap()
 }
 
-/// Outlook-style request: TZID + VTIMEZONE, folded lines, other attendees,
-/// RSVP=TRUE and a VALARM that must not leak into the reply.
 const TAIPEI_REQUEST: &str = "BEGIN:VCALENDAR\r\n\
 VERSION:2.0\r\n\
 PRODID:-//Example//Outlook//EN\r\n\
@@ -68,7 +64,6 @@ fn reply_keeps_request_identity_and_lists_only_me_with_partstat() {
     assert_eq!(reply.attendee, ME);
     assert_eq!(reply.partstat, "ACCEPTED");
     assert_eq!(reply.summary, "PLATFORM 讀書會, 文件整理");
-    // TZID is resolved for display, and the reply keeps the original wall time.
     assert_eq!(reply.start.as_deref(), Some("2026-10-21T14:00:00+08:00"));
     assert_eq!(reply.end.as_deref(), Some("2026-10-21T15:00:00+08:00"));
     assert!(!reply.recurring);
@@ -95,8 +90,6 @@ fn reply_keeps_request_identity_and_lists_only_me_with_partstat() {
         .iter()
         .filter(|line| line.starts_with("ATTENDEE"))
         .collect::<Vec<_>>();
-    // Organizers match replies by attendee; other invitees and RSVP=TRUE must
-    // not be echoed back as if we answered for them.
     assert_eq!(
         attendees,
         vec![&"ATTENDEE;CN=Alice;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED:MAILTO:Alice@Example.test"]
@@ -150,7 +143,6 @@ END:VCALENDAR\r\n";
     assert_eq!(reply.sequence, 0, "master has no SEQUENCE");
     assert_eq!(reply.recurrence_ids, vec!["20261028T060000Z"]);
     let ics = unfolded(&reply.ics);
-    // The master and the override I attend; the instance I was removed from is skipped.
     assert_eq!(ics.matches("BEGIN:VEVENT").count(), 2, "{ics}");
     assert!(ics.contains("RECURRENCE-ID:20261028T060000Z\r\nSEQUENCE:1\r\n"));
     assert!(!ics.contains("20261104"));
@@ -383,7 +375,6 @@ fn cli_dry_run_works_offline_but_demo_refuses_to_send() {
 
 #[test]
 fn non_mailto_attendee_with_multibyte_name_is_compared_not_panicked_on() {
-    // A bare CJK address puts byte 7 inside a character; slicing [..7] would panic.
     let request = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:u2\r\n\
 DTSTART:20261021T060000Z\r\nSUMMARY:x\r\nORGANIZER:mailto:carol@example.test\r\n\
 ATTENDEE:王小明@example.test\r\nATTENDEE:mailto:alice@example.test\r\n\
@@ -395,7 +386,6 @@ END:VEVENT\r\nEND:VCALENDAR\r\n";
 
 #[test]
 fn calendar_part_without_charset_is_decoded_as_utf8() {
-    // RFC 5545 defaults text/calendar to UTF-8; a charset-less part must keep Chinese intact.
     let mail = invite_mail("text/calendar; method=REQUEST", TAIPEI_REQUEST);
     let invite = invite_from_mail(mail.as_bytes()).unwrap();
     assert_eq!(invite.ics, TAIPEI_REQUEST);
