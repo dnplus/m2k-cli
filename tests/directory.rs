@@ -53,6 +53,105 @@ fn contact(id: &str, collection: &str, uid: &str, name: &str, email: &str) -> It
     }
 }
 
+fn seed_company_directory(dir: &std::path::Path, employees: &[(&str, &str, &str)]) {
+    let mut store = Store::open(dir).unwrap();
+    store
+        .apply_snapshot(
+            &Snapshot {
+                kind: Kind::Contacts,
+                collections: vec![
+                    collection("https://dav.test/ab/emp/", "EMP(/EMP)"),
+                    collection("https://dav.test/ab/eng/", "ENG(/EMP/ENG)"),
+                    collection("https://dav.test/ab/mine/", "我的聯絡人(/MINE)"),
+                ],
+                items: employees
+                    .iter()
+                    .map(|(id, collection, name)| {
+                        contact(id, collection, id, name, &format!("{id}@example.test"))
+                    })
+                    .collect(),
+            },
+            Utc::now(),
+        )
+        .unwrap();
+}
+
+#[test]
+fn shared_directory_cache_exports_company_branch_and_imports_authoritatively() {
+    let source = TempDir::new().unwrap();
+    seed_company_directory(
+        source.path(),
+        &[
+            ("alice", "https://dav.test/ab/emp/", "Alice"),
+            ("bob", "https://dav.test/ab/eng/", "Bob"),
+            ("carol", "https://dav.test/ab/emp/", "Carol"),
+            ("friend", "https://dav.test/ab/mine/", "Private Friend"),
+        ],
+    );
+    let output = source.path().join("shared").join("dir.json");
+    std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+    let exported = m2k::directory_cache::export(source.path(), &output, Some("EMP")).unwrap();
+    // The personal address book must never leak into a file shared with other users.
+    assert_eq!((exported.collections, exported.items), (2, 3));
+    let text = std::fs::read_to_string(&output).unwrap();
+    assert!(!text.contains("Private Friend"));
+    assert!(text.contains("\"format\":\"m2k-directory/1\""));
+
+    // A user's own data dir already has a stale copy of Carol plus a private contact.
+    let target = TempDir::new().unwrap();
+    seed_company_directory(
+        target.path(),
+        &[
+            ("stale", "https://dav.test/ab/emp/", "Left Company"),
+            ("friend", "https://dav.test/ab/mine/", "Private Friend"),
+        ],
+    );
+    let imported = m2k::directory_cache::import_if_newer(target.path(), &output).unwrap();
+    assert_eq!(imported, Some(3));
+    let store = Store::open(target.path()).unwrap();
+    let mut names = store
+        .list(Kind::Contacts, None, None, usize::MAX)
+        .unwrap()
+        .into_iter()
+        .map(|item| item.title)
+        .collect::<Vec<_>>();
+    names.sort();
+    // Snapshot semantics: the departed employee is gone, the private book is untouched.
+    assert_eq!(names, ["Alice", "Bob", "Carol", "Private Friend"]);
+    drop(store);
+    assert_eq!(
+        m2k::directory_cache::import_if_newer(target.path(), &output).unwrap(),
+        None,
+        "the same file must not be re-imported on every lookup"
+    );
+
+    // A newer export after Carol left removes her on the next lookup.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    seed_company_directory(
+        source.path(),
+        &[
+            ("alice", "https://dav.test/ab/emp/", "Alice"),
+            ("bob", "https://dav.test/ab/eng/", "Bob"),
+        ],
+    );
+    m2k::directory_cache::export(source.path(), &output, Some("EMP")).unwrap();
+    assert_eq!(
+        m2k::directory_cache::import_if_newer(target.path(), &output).unwrap(),
+        Some(2)
+    );
+    let store = Store::open(target.path()).unwrap();
+    assert!(store
+        .list(Kind::Contacts, None, None, usize::MAX)
+        .unwrap()
+        .iter()
+        .all(|item| item.title != "Carol"));
+    assert!(m2k::directory_cache::import_if_newer(
+        target.path(),
+        &target.path().join("missing.json")
+    )
+    .is_err());
+}
+
 #[test]
 fn persisted_contact_pages_decode_only_selected_people_and_keep_all_memberships() {
     let dir = TempDir::new().unwrap();
@@ -604,6 +703,87 @@ fn company_sync_completeness_bfs_finds_leaves_missed_by_shallow_infinity() {
             .count(),
         4
     );
+}
+
+#[test]
+fn company_sync_replaces_cache_written_under_legacy_collection_encoding() {
+    // Caches written before collection ids were canonicalized keep the
+    // server's lowercase `%3d` escapes. A resync must take over those rows
+    // instead of failing on the reused item id or keeping a duplicate branch.
+    let _password_guard = PASSWORD_LOCK.lock().expect("password lock");
+    let principal = multistatus([principal_response("/carddav/home/")]);
+    let home = multistatus([addressbook_response(
+        "/carddav/home/ACME%3d%3d/",
+        "ACME(/ACME)",
+    )]);
+    let report = multistatus([contact_response("/carddav/home/ACME%3d%3d/self.vcf")]);
+    let (address, handle) = spawn_server(vec![
+        ResponseSpec { body: principal },
+        ResponseSpec { body: home },
+        ResponseSpec {
+            body: multistatus(Vec::<String>::new()),
+        },
+        ResponseSpec { body: report },
+    ]);
+    let data_dir = setup_data_dir(address);
+    let legacy = format!("http://{address}/carddav/home/ACME%3d%3d/");
+    let mut cached = contact(
+        "placeholder",
+        &legacy,
+        "self-1",
+        "王自動",
+        "user@example.test",
+    );
+    cached.remote_id = format!("{legacy}self.vcf");
+    cached.id = format!("{legacy}::{}", cached.remote_id);
+    let mut gone = contact(
+        "placeholder",
+        &legacy,
+        "left-1",
+        "已離職",
+        "left@example.test",
+    );
+    gone.remote_id = format!("{legacy}left.vcf");
+    gone.id = format!("{legacy}::{}", gone.remote_id);
+    Store::open(data_dir.path())
+        .unwrap()
+        .apply_collection_snapshot(
+            &Snapshot {
+                kind: Kind::Contacts,
+                collections: vec![collection(&legacy, "ACME(/ACME)")],
+                items: vec![cached, gone],
+            },
+            Utc::now(),
+        )
+        .unwrap();
+    std::env::set_var("M2K_KEYCHAIN", NO_KEYCHAIN);
+    std::env::set_var("M2K_PASSWORD", "password");
+    let result = m2k::directory::sync_contacts(
+        data_dir.path(),
+        SyncArgs {
+            scope: DirectoryScope::Company,
+            addressbook: None,
+        },
+    );
+    std::env::remove_var("M2K_PASSWORD");
+    handle.join().expect("join mock server");
+    let result = result.expect("company sync over legacy cache");
+    assert_eq!(result.count, 1);
+    let store = Store::open(data_dir.path()).unwrap();
+    let collections = store.collections(Kind::Contacts).unwrap();
+    assert_eq!(
+        collections.len(),
+        1,
+        "legacy alias must not stay as a second branch"
+    );
+    assert_eq!(
+        collections[0].id,
+        format!("http://{address}/carddav/home/ACME%3D%3D/")
+    );
+    let items = store.list(Kind::Contacts, None, None, usize::MAX).unwrap();
+    assert_eq!(items.len(), 1, "removed contact must disappear");
+    assert_eq!(items[0].collection, collections[0].id);
+    assert_eq!(items[0].emails, vec!["user@example.test".to_owned()]);
 }
 
 #[test]

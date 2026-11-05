@@ -42,6 +42,8 @@ pub enum DirectoryCommand {
     Resolve(ResolveArgs),
     #[command(about = "從本機快取確定性輸出部門組織圖與成員，給代理程式當脈絡；--json 為結構化")]
     Chart(crate::directory_chart::ChartArgs),
+    #[command(about = "把本機快取的公司通訊錄分支匯出成共用 JSON（供 M2K_DIRECTORY_CACHE 匯入）")]
+    Export(crate::directory_cache::ExportArgs),
 }
 
 #[derive(Debug, Args)]
@@ -188,6 +190,15 @@ pub fn sync_default(config: &Config, password: &str, _existing: &[Item]) -> Resu
 }
 
 pub fn execute(data_dir: &Path, command: DirectoryCommand, json: bool) -> Result<()> {
+    if matches!(
+        command,
+        DirectoryCommand::Search(_)
+            | DirectoryCommand::Resolve(_)
+            | DirectoryCommand::SelfContact(_)
+            | DirectoryCommand::Chart(_)
+    ) {
+        crate::directory_cache::import_from_env(data_dir);
+    }
     match command {
         DirectoryCommand::Tree(args) => execute_tree(data_dir, args, json),
         DirectoryCommand::Sync(args) => execute_sync(data_dir, args, json),
@@ -204,6 +215,7 @@ pub fn execute(data_dir: &Path, command: DirectoryCommand, json: bool) -> Result
             execute_resolve(data_dir, args.query, args.online, args.addressbook, json)
         }
         DirectoryCommand::Chart(args) => crate::directory_chart::execute(data_dir, args, json),
+        DirectoryCommand::Export(args) => crate::directory_cache::execute_export(data_dir, args),
     }
 }
 
@@ -1089,7 +1101,7 @@ fn normalize_path(value: &str) -> String {
         .join("/")
 }
 
-fn same_or_descendant_path(value: &str, parent: &str) -> bool {
+pub(crate) fn same_or_descendant_path(value: &str, parent: &str) -> bool {
     value == parent || value.starts_with(&format!("{parent}/"))
 }
 
@@ -1097,7 +1109,7 @@ fn normalize_url_prefix(value: &str) -> String {
     value.trim_end_matches('/').to_owned() + "/"
 }
 
-fn same_or_descendant_url(value: &str, parent: &str) -> bool {
+pub(crate) fn same_or_descendant_url(value: &str, parent: &str) -> bool {
     let value = normalize_url_prefix(value);
     let parent = normalize_url_prefix(parent);
     value.starts_with(&parent)
