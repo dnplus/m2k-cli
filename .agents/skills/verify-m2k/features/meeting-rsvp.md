@@ -12,7 +12,7 @@ A user answers a meeting invitation that arrived by mail: `meeting rsvp` finds t
 
 - `m2k mail list` / `m2k mail search 會議` to find the invite ID.
 - `m2k meeting rsvp ID --response accept|decline|tentative [--comment TEXT] [--dry-run]`.
-- No TUI entry yet.
+- TUI: open the invite in the mail tab and press `i` (see [tui-rsvp.md](./tui-rsvp.md)).
 
 ## Driving it with m2kv
 

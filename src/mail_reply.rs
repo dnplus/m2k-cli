@@ -143,13 +143,21 @@ pub fn compose_draft(item: &Item) -> Result<String> {
     ))
 }
 
-pub fn parse_draft(text: &str) -> Result<(ReplyHeaders, String)> {
+struct Draft {
+    to: Vec<String>,
+    cc: Vec<String>,
+    subject: Option<String>,
+    body: String,
+}
+
+fn split_draft(text: &str, allowed: &[&str]) -> Result<Draft> {
     let text = text.replace("\r\n", "\n");
     let (head, body) = match text.split_once("\n\n") {
         Some(parts) => parts,
         None => (text.trim_end_matches('\n'), ""),
     };
     let mut to = None;
+    let mut cc = None;
     let mut subject = None;
     for line in head.lines() {
         if line.trim().is_empty() {
@@ -158,23 +166,54 @@ pub fn parse_draft(text: &str) -> Result<(ReplyHeaders, String)> {
         let Some((name, value)) = line.split_once(':') else {
             bail!("標頭格式錯誤：{line}");
         };
-        {
-            match name.trim().to_ascii_lowercase().as_str() {
-                "to" => to = Some(value.trim().to_owned()),
-                "subject" => subject = Some(value.trim().to_owned()),
-                other => bail!("不支援的標頭 {other}:（只能編輯 To 與 Subject）"),
-            }
+        let name = name.trim().to_ascii_lowercase();
+        let value = Some(value.trim().to_owned());
+        match name.as_str() {
+            "to" if allowed.contains(&"to") => to = value,
+            "cc" if allowed.contains(&"cc") => cc = value,
+            "subject" if allowed.contains(&"subject") => subject = value,
+            other => bail!(
+                "不支援的標頭 {other}:（只能編輯 {}）",
+                allowed
+                    .iter()
+                    .map(|name| match *name {
+                        "to" => "To",
+                        "cc" => "Cc",
+                        _ => "Subject",
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" 與 ")
+            ),
         }
     }
     let to = addresses(&to.context("缺少 To: 標頭")?).context("To: 收件人無法解析")?;
     if to.is_empty() || to.iter().any(|address| !address.contains('@')) {
         bail!("To: 至少需要一位有效收件人（含 @）");
     }
-    let subject = subject.unwrap_or_default();
-    if subject.is_empty() || subject.contains('\n') {
-        bail!("Subject: 不可為空");
+    let cc = match cc.filter(|value| !value.is_empty()) {
+        Some(value) => addresses(&value).context("Cc: 收件人無法解析")?,
+        None => vec![],
+    };
+    if cc.iter().any(|address| !address.contains('@')) {
+        bail!("Cc: 收件人需含 @");
     }
-    let has_reply = body.lines().any(|line| {
+    if let Some(subject) = &subject {
+        if subject.is_empty() {
+            bail!("Subject: 不可為空");
+        }
+    }
+    Ok(Draft {
+        to,
+        cc,
+        subject,
+        body: body.to_owned(),
+    })
+}
+
+pub fn parse_draft(text: &str) -> Result<(ReplyHeaders, String)> {
+    let draft = split_draft(text, &["to", "subject"])?;
+    let subject = draft.subject.context("Subject: 不可為空")?;
+    let has_reply = draft.body.lines().any(|line| {
         let line = line.trim();
         !line.is_empty()
             && !line.starts_with('>')
@@ -184,19 +223,50 @@ pub fn parse_draft(text: &str) -> Result<(ReplyHeaders, String)> {
         bail!("回覆正文是空的（只有引用）");
     }
     Ok((
-        ReplyHeaders { to, subject },
-        body.trim_end().to_owned() + "\n",
+        ReplyHeaders {
+            to: draft.to,
+            subject,
+        },
+        draft.body.trim_end().to_owned() + "\n",
     ))
 }
 
-/// 保存草稿到 `<data-dir>/drafts/`；`existing` 有值時覆寫同一檔。
-pub fn save_draft_file(data_dir: &Path, existing: Option<&Path>, text: &str) -> Result<PathBuf> {
+/// 轉寄草稿只有 To:；主旨由原信自動加上 Fwd:，正文是可留空的前言。
+pub fn parse_forward_draft(text: &str) -> Result<(Vec<String>, String)> {
+    let draft = split_draft(text, &["to"])?;
+    Ok((draft.to, draft.body.trim().to_owned()))
+}
+
+/// 新郵件草稿：To:、可省略的 Cc:、Subject: 與不可為空的正文。
+pub fn parse_new_draft(text: &str) -> Result<OutgoingMail> {
+    let draft = split_draft(text, &["to", "cc", "subject"])?;
+    let subject = draft.subject.context("缺少 Subject: 標頭")?;
+    if draft.body.trim().is_empty() {
+        bail!("正文是空的");
+    }
+    Ok(OutgoingMail {
+        to: draft.to,
+        cc: draft.cc,
+        subject,
+        body: draft.body.trim_end().to_owned() + "\n",
+        attachments: vec![],
+        in_reply_to: None,
+    })
+}
+
+/// 保存草稿到 `<data-dir>/drafts/<prefix>-…`；`existing` 有值時覆寫同一檔。
+pub fn save_draft_file(
+    data_dir: &Path,
+    existing: Option<&Path>,
+    prefix: &str,
+    text: &str,
+) -> Result<PathBuf> {
     let root = data_dir.join("drafts");
     local_state::private_directory(&root)?;
     let path = match existing {
         Some(path) => path.to_owned(),
         None => root.join(format!(
-            "reply-{}-{}.txt",
+            "{prefix}-{}-{}.txt",
             chrono::Local::now().format("%Y%m%d-%H%M%S"),
             &uuid::Uuid::new_v4().simple().to_string()[..8]
         )),
@@ -271,11 +341,34 @@ mod tests {
     }
 
     #[test]
+    fn forward_and_new_drafts_accept_only_their_own_headers() {
+        let (to, intro) = parse_forward_draft("To: a@b.test").unwrap();
+        assert_eq!((to, intro.as_str()), (vec!["a@b.test".to_owned()], ""));
+        let error = parse_forward_draft("To: a@b.test\nSubject: x\n\nhi").unwrap_err();
+        assert!(
+            format!("{error:#}").contains("只能編輯 To"),
+            "主旨由原信決定"
+        );
+        assert!(parse_forward_draft("To: \n\nhi").is_err());
+        let mail = parse_new_draft("To: a@b.test\nCc: c@b.test\nSubject: 週會\n\n內文").unwrap();
+        assert_eq!(
+            (mail.cc, mail.subject, mail.body),
+            (
+                vec!["c@b.test".to_owned()],
+                "週會".to_owned(),
+                "內文\n".to_owned()
+            )
+        );
+        assert!(parse_new_draft("To: a@b.test\nSubject: 週會\n\n  ").is_err());
+        assert!(parse_new_draft("To: a@b.test\n\n內文").is_err());
+    }
+
+    #[test]
     fn save_draft_file_is_private_and_overwrites_same_path() {
         let temp = tempfile::tempdir().unwrap();
-        let first = save_draft_file(temp.path(), None, "a").unwrap();
+        let first = save_draft_file(temp.path(), None, "reply", "a").unwrap();
         assert!(first.starts_with(temp.path().join("drafts")));
-        let again = save_draft_file(temp.path(), Some(&first), "b").unwrap();
+        let again = save_draft_file(temp.path(), Some(&first), "reply", "b").unwrap();
         assert_eq!(first, again);
         assert_eq!(std::fs::read_to_string(&first).unwrap(), "b");
         #[cfg(unix)]

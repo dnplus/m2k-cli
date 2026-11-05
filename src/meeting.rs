@@ -338,59 +338,59 @@ struct PrepareOutput {
 }
 
 #[derive(Debug, Serialize)]
-struct InviteOutput {
-    file: PathBuf,
-    uid: Option<String>,
-    title: String,
-    start: Option<String>,
-    end: Option<String>,
-    attendees: Vec<String>,
-    dry_run: bool,
-    sent: bool,
-    message_id: Option<String>,
+pub struct InviteOutput {
+    pub file: PathBuf,
+    pub uid: Option<String>,
+    pub title: String,
+    pub start: Option<String>,
+    pub end: Option<String>,
+    pub attendees: Vec<String>,
+    pub dry_run: bool,
+    pub sent: bool,
+    pub message_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
-struct BookOutput {
-    state: String,
-    uid: Option<String>,
-    room: Option<String>,
-    target: String,
-    start: Option<String>,
-    end: Option<String>,
-    dry_run: bool,
-    warnings: Vec<String>,
-    completed: Vec<BookTargetResult>,
-    failed: Option<BookFailure>,
-    remediation: Option<String>,
-    receipt: Option<BookReceipt>,
+pub struct BookOutput {
+    pub state: String,
+    pub uid: Option<String>,
+    pub room: Option<String>,
+    pub target: String,
+    pub start: Option<String>,
+    pub end: Option<String>,
+    pub dry_run: bool,
+    pub warnings: Vec<String>,
+    pub completed: Vec<BookTargetResult>,
+    pub failed: Option<BookFailure>,
+    pub remediation: Option<String>,
+    pub receipt: Option<BookReceipt>,
 }
 
 #[derive(Debug, Serialize)]
-struct BookTargetResult {
-    target: String,
-    calendar_url: String,
-    item_id: Option<String>,
-    cache_error: Option<String>,
+pub struct BookTargetResult {
+    pub target: String,
+    pub calendar_url: String,
+    pub item_id: Option<String>,
+    pub cache_error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
-struct BookFailure {
-    target: String,
-    calendar_url: String,
-    error: String,
+pub struct BookFailure {
+    pub target: String,
+    pub calendar_url: String,
+    pub error: String,
 }
 
 #[derive(Debug, Serialize)]
-struct BookReceipt {
-    collection: String,
-    resource_url: String,
-    uid: Option<String>,
-    operation: String,
-    status: String,
-    remote_accepted: bool,
-    reconcile_required: bool,
-    reason: String,
+pub struct BookReceipt {
+    pub collection: String,
+    pub resource_url: String,
+    pub uid: Option<String>,
+    pub operation: String,
+    pub status: String,
+    pub remote_accepted: bool,
+    pub reconcile_required: bool,
+    pub reason: String,
 }
 
 pub fn execute(data_dir: &Path, command: MeetingCommand, json: bool) -> Result<()> {
@@ -1392,6 +1392,11 @@ fn execute_prepare(data_dir: &Path, args: PrepareArgs, json: bool) -> Result<()>
 }
 
 fn execute_invite(data_dir: &Path, args: InviteArgs, json: bool) -> Result<()> {
+    let (output, text) = invite(data_dir, args)?;
+    emit(&output, text, json)
+}
+
+pub fn invite(data_dir: &Path, args: InviteArgs) -> Result<(InviteOutput, &'static str)> {
     let raw = fs::read_to_string(&args.file)
         .with_context(|| format!("無法讀取 ICS：{}", args.file.display()))?;
     let parsed = parse_ics(&raw)?;
@@ -1429,10 +1434,15 @@ fn execute_invite(data_dir: &Path, args: InviteArgs, json: bool) -> Result<()> {
     } else {
         "已解析會議邀請；未寄送。請明確加上 --send 才會寄信。"
     };
-    emit(&output, text, json)
+    Ok((output, text))
 }
 
 fn execute_book(data_dir: &Path, args: BookArgs, json: bool) -> Result<()> {
+    let (output, text) = book(data_dir, args)?;
+    emit(&output, text, json)
+}
+
+pub fn book(data_dir: &Path, args: BookArgs) -> Result<(BookOutput, &'static str)> {
     let _lock = sync::lock(data_dir)?;
     let raw = fs::read_to_string(&args.file)
         .with_context(|| format!("無法讀取 ICS：{}", args.file.display()))?;
@@ -1580,11 +1590,7 @@ fn execute_book(data_dir: &Path, args: BookArgs, json: bool) -> Result<()> {
             remediation: None,
             receipt: None,
         };
-        return emit(
-            &output,
-            "已完成 live recheck；dry-run 未寫入任何行事曆。",
-            json,
-        );
+        return Ok((output, "已完成 live recheck；dry-run 未寫入任何行事曆。"));
     }
     let room_label = room_target.as_ref().map(|target| target.label.clone());
     let mut targets = Vec::new();
@@ -1657,11 +1663,7 @@ fn execute_book(data_dir: &Path, args: BookArgs, json: bool) -> Result<()> {
                         )),
                         receipt: None,
                     };
-                    return emit(
-                        &output,
-                        "遠端寫入成功但本機快取未完成，預約狀態為 partial。",
-                        json,
-                    );
+                    return Ok((output, "遠端寫入成功但本機快取未完成，預約狀態為 partial。"));
                 }
             }
             Err(error) => {
@@ -1704,11 +1706,10 @@ fn execute_book(data_dir: &Path, args: BookArgs, json: bool) -> Result<()> {
                             reason: pending.reason.clone(),
                         }),
                     };
-                    return emit(
-                        &output,
+                    return Ok((
+                        output,
                         "DAV PUT 已接受但尚未完成 reconciliation，預約狀態不是 complete。",
-                        json,
-                    );
+                    ));
                 }
                 if completed.is_empty() {
                     bail!(
@@ -1742,7 +1743,7 @@ fn execute_book(data_dir: &Path, args: BookArgs, json: bool) -> Result<()> {
                     )),
                     receipt: None,
                 };
-                return emit(&output, "預約只完成部分寫入，請依 remediation 處理。", json);
+                return Ok((output, "預約只完成部分寫入，請依 remediation 處理。"));
             }
         }
     }
@@ -1765,7 +1766,7 @@ fn execute_book(data_dir: &Path, args: BookArgs, json: bool) -> Result<()> {
         "room" => "已完成會議室行事曆寫入。",
         _ => "已完成會議室與個人行事曆寫入。",
     };
-    emit(&output, text, json)
+    Ok((output, text))
 }
 
 fn emit<T: Serialize>(value: &T, text: &str, json: bool) -> Result<()> {

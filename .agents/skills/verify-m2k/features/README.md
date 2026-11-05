@@ -34,16 +34,18 @@ Each file has an H1, one paragraph, and four H2s in order: `Sub-features`, `How 
 - [Mail graph](./mail-graph.md) — `mail graph` people and thread statuses, Markdown and JSON, `--person`, `--automated-senders`, `--days` guard.
 - [Directory chart](./directory-chart.md) — `directory chart` Markdown, JSON, Mermaid, `--branch`, unknown branch.
 - [Directory export and shared cache](./directory-export-cache.md) — `directory export`, `M2K_DIRECTORY_CACHE` import once per file, authoritative removal, bad-file warning.
-- [Room finder](./room-finder.md) — `meeting rooms` free / busy / unknown from the offline room cache, CLI and TUI tab 4.
+- [Room finder](./room-finder.md) — `meeting rooms` free / busy / unknown from the offline room cache, CLI and TUI tab 4; TUI `b` live check, `y` book, `i` invite: demo refusal via m2kv, fixture booking and invite by hand.
 - [Meeting draft](./meeting-draft.md) — `meeting prepare` writes an ICS; `invite --dry-run` parses it without sending.
 - [Meeting RSVP](./meeting-rsvp.md) — `meeting rsvp` METHOD:REPLY: demo guards via m2kv, dry-run and real SMTP send against the loopback fixture.
 - [TUI workbench](./tui-workbench.md) — tabs, mail detail, contact search, clean exit.
 - [TUI org chart](./tui-org-chart.md) — contacts `v` list ↔ org chart, j/k select, Enter expand/collapse, member detail, missing-root warning.
 - [TUI reply draft](./tui-reply-draft.md) — `R` in mail detail, `$EDITOR`/built-in input, confirm, demo save-only, fixture send.
+- [TUI mail actions](./tui-mail-actions.md) — `s`/`f` flags, `m`/`x` move and delete confirmation, `c`/`F` compose and forward, `a` attachment save without overwrite, demo refusal.
+- [TUI meeting RSVP](./tui-rsvp.md) — invite summary in mail detail, `i` accept/decline/tentative with comment, confirm/Esc, no-invite and demo refusal, fixture REPLY send.
 - [Calendar create / edit / delete](./calendar-crud.md) — CLI `calendar create/update --title …`, TUI `n`/`e`/`x` with confirmation, guards, demo refusal, fixture writes and ETag conflict.
 - [Config and retention](./config-retention.md) — `config set` persists across processes.
 - [Offline guard and JSON errors](./offline-guard.md) — demo refuses online writes; JSON error contract.
 
 ## Not yet mapped
 
-Need a real account or a loopback server the harness does not ship: `init`/`auth`, `sync`/`watch`, `mail send|reply|forward|flag|move|delete`, `mail cleanup-*`, `mail watch` webhook, `directory sync|tree`, `meeting free-busy|slots|review|book`, contacts `create|update|delete` (calendar writes are in calendar-crud.md via the fixture). Offline-capable but unmapped: `date-range`, `directory resolve` and `directory search|self` on their own (they appear only as cache-import probes in directory-export-cache.md), `calendar|contacts export`, `meeting resources`, `skills install`, `prune`, TUI calendar views, and the TUI 找會議室 minutes-mode slot picker (the exact start/end query is mapped in room-finder.md).
+Need a real account or a loopback server the harness does not ship: `init`/`auth`, `sync`/`watch`, `mail send|reply|forward|flag|move|delete` against a real server (their TUI confirmation screens and demo refusal are in tui-mail-actions.md), `mail cleanup-*`, `mail watch` webhook, `directory sync|tree`, `meeting free-busy|slots|review`, `meeting book` on the CLI (its TUI path is in room-finder.md via the fixture), contacts `create|update|delete` (calendar writes are in calendar-crud.md via the fixture). Offline-capable but unmapped: `date-range`, `directory resolve` and `directory search|self` on their own (they appear only as cache-import probes in directory-export-cache.md), `calendar|contacts export`, `meeting resources`, `skills install`, `prune`, TUI calendar views.

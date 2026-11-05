@@ -40,6 +40,7 @@ mod event_form;
 #[path = "../examples/m2k_fixture/fixture.rs"]
 #[allow(dead_code)]
 mod fixture;
+mod mail_prompt;
 mod org_chart;
 mod reply;
 mod rooms;
@@ -73,6 +74,14 @@ struct BodyJob {
     generation: u64,
     id: String,
     receiver: Receiver<Result<Item>>,
+}
+
+/// 背景郵件寫入；完成時旗標變更回傳更新後的郵件，移動／刪除回傳 None。
+struct MailJob {
+    id: String,
+    action: String,
+    done: String,
+    receiver: Receiver<Result<Option<Item>>>,
 }
 
 struct App {
@@ -113,6 +122,8 @@ struct App {
     reply_editor: Option<String>,
     editor_request: Option<PathBuf>,
     pending_send: Option<Receiver<Result<String>>>,
+    mail_prompt: Option<mail_prompt::Prompt>,
+    pending_mail: Option<MailJob>,
     event_form: Option<event_form::EventForm>,
     pending_event: Option<Receiver<Result<Option<Item>>>>,
     kept_event: Option<event_form::Kept>,
@@ -164,6 +175,8 @@ impl App {
             reply_editor: None,
             editor_request: None,
             pending_send: None,
+            mail_prompt: None,
+            pending_mail: None,
             event_form: None,
             pending_event: None,
             kept_event: None,
@@ -459,12 +472,14 @@ impl App {
         self.load_selected_item()
     }
 
-    fn start_reply(&mut self, editor: Option<String>) {
-        let selected = self
-            .rows
+    fn opened_mail(&self) -> Option<&Item> {
+        self.rows
             .get(self.table.selected().unwrap_or(0))
-            .filter(|row| self.detail && row.kind == Kind::Mail && !row.raw.is_empty());
-        let Some(item) = selected else {
+            .filter(|row| self.detail && row.kind == Kind::Mail && !row.raw.is_empty())
+    }
+
+    fn start_reply(&mut self, editor: Option<String>) {
+        let Some(item) = self.opened_mail() else {
             self.status = "先按 Enter 開啟郵件、等正文載入後再按 R 回覆".into();
             return;
         };
@@ -475,15 +490,51 @@ impl App {
                 return;
             }
         };
+        let id = item.id.clone();
+        self.open_composer(reply::Compose::Reply, id, text, editor);
+    }
+
+    fn start_forward(&mut self, editor: Option<String>) {
+        let Some(item) = self.opened_mail() else {
+            self.status = "先按 Enter 開啟郵件、等正文載入後再按 F 轉寄".into();
+            return;
+        };
+        let id = item.id.clone();
+        let external = editor
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty());
+        let text = if external { "To: \n\n" } else { "To: " };
+        self.open_composer(reply::Compose::Forward, id, text.into(), editor);
+    }
+
+    fn start_new_mail(&mut self, editor: Option<String>) {
+        let external = editor
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty());
+        let text = if external {
+            "To: \nCc: \nSubject: \n\n"
+        } else {
+            "To: "
+        };
+        self.open_composer(reply::Compose::New, String::new(), text.into(), editor);
+    }
+
+    fn open_composer(
+        &mut self,
+        compose: reply::Compose,
+        id: String,
+        text: String,
+        editor: Option<String>,
+    ) {
         let editor = editor.filter(|value| !value.trim().is_empty());
-        let mut flow = reply::ReplyFlow::new(
-            item.id.clone(),
-            text,
-            editor.is_some(),
-            self.dir.join(".demo").exists(),
-        );
+        let mut flow = reply::ReplyFlow::compose(compose, id, text, editor.is_some(), self.demo());
         if editor.is_some() {
-            match crate::mail_reply::save_draft_file(&self.dir, None, &flow.text) {
+            match crate::mail_reply::save_draft_file(
+                &self.dir,
+                None,
+                compose.draft_prefix(),
+                &flow.text,
+            ) {
                 Ok(path) => {
                     self.editor_request = Some(path.clone());
                     flow.draft_path = Some(path);
@@ -502,8 +553,12 @@ impl App {
         let Some(flow) = self.reply.as_mut() else {
             return false;
         };
-        match crate::mail_reply::save_draft_file(&self.dir, flow.draft_path.as_deref(), &flow.text)
-        {
+        match crate::mail_reply::save_draft_file(
+            &self.dir,
+            flow.draft_path.as_deref(),
+            flow.compose.draft_prefix(),
+            &flow.text,
+        ) {
             Ok(path) => {
                 flow.draft_path = Some(path);
                 true
@@ -548,25 +603,32 @@ impl App {
                     return;
                 }
                 let flow = self.reply.as_mut().expect("reply flow");
-                let Ok((headers, body)) = flow.check() else {
+                let Ok(ready) = flow.check() else {
                     flow.phase = reply::Phase::Confirm;
                     return;
                 };
                 let (dir, id) = (self.dir.clone(), flow.mail_id.clone());
+                let label = flow.compose.label();
                 let (tx, rx) = mpsc::channel();
                 std::thread::spawn(move || {
-                    let result = crate::mail_reply::send_reply(
-                        &dir,
-                        &id,
-                        || Ok(body),
-                        vec![],
-                        Some(headers),
-                    )
+                    let result = match ready {
+                        reply::Ready::Reply(headers, body) => crate::mail_reply::send_reply(
+                            &dir,
+                            &id,
+                            || Ok(body),
+                            vec![],
+                            Some(headers),
+                        ),
+                        reply::Ready::Forward { to, introduction } => {
+                            crate::mail_action::forward(&dir, &id, &to, || Ok(introduction))
+                        }
+                        reply::Ready::New(mail) => crate::mail_action::send(&dir, || Ok(mail)),
+                    }
                     .map_err(|error| crate::mail_reply::masked_error(&dir, error));
                     let _ = tx.send(result);
                 });
                 self.pending_send = Some(rx);
-                self.status = "正在寄出回覆...".into();
+                self.status = format!("正在寄出{label}...");
             }
         }
     }
@@ -576,19 +638,23 @@ impl App {
             return false;
         };
         self.pending_send = None;
+        let label = self
+            .reply
+            .as_ref()
+            .map_or("郵件", |flow| flow.compose.label());
         match result {
             Ok(message_id) => {
                 if let Some(path) = self.reply.take().and_then(|flow| flow.draft_path) {
                     let _ = std::fs::remove_file(path);
                 }
-                self.status = format!("已寄出回覆 {message_id}");
+                self.status = format!("已寄出{label} {message_id}");
             }
             Err(error) => {
                 let reason = format!("{error:#}");
                 if let Some(flow) = self.reply.as_mut() {
                     flow.send_failed(&reason);
                 }
-                self.status = "回覆寄送失敗，草稿保留".into();
+                self.status = format!("{label}寄送失敗，草稿保留");
             }
         }
         true
@@ -626,6 +692,270 @@ impl App {
 
     fn demo(&self) -> bool {
         self.dir.join(".demo").exists()
+    }
+
+    fn selected_mail(&mut self) -> Option<Item> {
+        if self.pending_mail.is_some() {
+            self.status = "上一個郵件操作仍在進行，請等結果".into();
+            return None;
+        }
+        let item = self
+            .table
+            .selected()
+            .and_then(|index| self.rows.get(index))
+            .filter(|row| row.kind == Kind::Mail)
+            .cloned();
+        if item.is_none() {
+            self.status = "先用 ↑↓ 選取一封郵件".into();
+        }
+        item
+    }
+
+    fn mail_target(item: &Item) -> mail_prompt::Target {
+        mail_prompt::Target {
+            id: item.id.clone(),
+            subject: item.title.clone(),
+            folder: mail::display_collection(&item.collection),
+            collection: item.collection.clone(),
+        }
+    }
+
+    fn toggle_flag(&mut self, flag: &'static str) {
+        let Some(item) = self.selected_mail() else {
+            return;
+        };
+        let enable = !item.flags.iter().any(|f| f == flag);
+        let change = match (flag, enable) {
+            ("\\Seen", true) => "標為已讀",
+            ("\\Seen", false) => "標為未讀",
+            (_, true) => "加上星號",
+            (_, false) => "取消星號",
+        };
+        let (dir, id) = (self.dir.clone(), item.id.clone());
+        self.spawn_mail(
+            &item,
+            change,
+            format!("已{change}：「{}」", item.title),
+            move || crate::mail_action::flag(&dir, &id, flag, enable).map(Some),
+        );
+    }
+
+    fn start_move(&mut self) {
+        let Some(item) = self.selected_mail() else {
+            return;
+        };
+        let folders = self
+            .collections
+            .iter()
+            .skip(1)
+            .map(|(id, _)| id.clone())
+            .filter(|id| *id != item.collection)
+            .collect();
+        self.mail_prompt = Some(mail_prompt::Prompt::Move {
+            target: Self::mail_target(&item),
+            input: String::new(),
+            folders,
+            confirm: false,
+            notice: None,
+        });
+    }
+
+    fn start_delete(&mut self) {
+        if let Some(item) = self.selected_mail() {
+            self.mail_prompt = Some(mail_prompt::Prompt::Delete {
+                target: Self::mail_target(&item),
+            });
+        }
+    }
+
+    fn start_attachment(&mut self) {
+        let Some(item) = self.opened_mail() else {
+            self.status = "先按 Enter 開啟郵件、等正文載入後再按 a 存附件".into();
+            return;
+        };
+        if item.attachments.is_empty() {
+            self.status = "這封郵件沒有附件".into();
+            return;
+        }
+        let names = item
+            .attachments
+            .iter()
+            .map(|attachment| attachment.filename.clone())
+            .collect();
+        self.mail_prompt = Some(mail_prompt::Prompt::attachment(item.id.clone(), names));
+    }
+
+    fn start_rsvp(&mut self) {
+        use crate::meeting_rsvp::{build_rsvp_reply, invite_from_mail, RsvpResponse};
+        if self.pending_mail.is_some() {
+            self.status = "上一個郵件操作仍在進行，請等結果".into();
+            return;
+        }
+        let Some(item) = self.opened_mail() else {
+            self.status = "先按 Enter 開啟郵件、等正文載入後再按 i 回覆邀請".into();
+            return;
+        };
+        let Ok(invite) = mail::raw_bytes(item).and_then(|raw| invite_from_mail(&raw)) else {
+            self.status = "這封郵件沒有會議邀請（text/calendar），沒有可回覆的內容".into();
+            return;
+        };
+        let Some(cfg) = &self.config else {
+            self.status = "尚未設定帳號 · 請執行 m2k init --username 你的帳號".into();
+            return;
+        };
+        match build_rsvp_reply(
+            &invite.ics,
+            invite.content_type_method.as_deref(),
+            &cfg.email,
+            RsvpResponse::Accept,
+            None,
+            Utc::now(),
+        ) {
+            Ok(reply) => {
+                self.mail_prompt = Some(mail_prompt::Prompt::Rsvp {
+                    id: item.id.clone(),
+                    summary: reply.summary,
+                    organizer: reply.organizer,
+                    response: RsvpResponse::Accept,
+                    comment: String::new(),
+                    confirm: false,
+                });
+            }
+            Err(error) => self.status = format!("無法回覆邀請：{error:#}"),
+        }
+    }
+
+    fn mail_prompt_key(&mut self, key: KeyEvent) {
+        let Some(prompt) = self.mail_prompt.as_mut() else {
+            return;
+        };
+        match prompt.key(key) {
+            mail_prompt::Action::None => {}
+            mail_prompt::Action::Cancel => {
+                self.mail_prompt = None;
+                self.status = "已取消，沒有變更".into();
+            }
+            mail_prompt::Action::Move { folder } => {
+                let Some(mail_prompt::Prompt::Move { target, .. }) = self.mail_prompt.take() else {
+                    return;
+                };
+                let Some(item) = self.rows.iter().find(|row| row.id == target.id).cloned() else {
+                    return;
+                };
+                let (dir, id) = (self.dir.clone(), item.id.clone());
+                let target_folder = folder.clone();
+                self.spawn_mail(
+                    &item,
+                    "移動",
+                    format!(
+                        "已移動「{}」到 {folder} · 按 r 同步後會出現在新資料夾",
+                        item.title
+                    ),
+                    move || {
+                        crate::mail_action::move_mail(&dir, &[id], &target_folder, false)
+                            .map(|_| None)
+                    },
+                );
+            }
+            mail_prompt::Action::Delete => {
+                let Some(mail_prompt::Prompt::Delete { target }) = self.mail_prompt.take() else {
+                    return;
+                };
+                let Some(item) = self.rows.iter().find(|row| row.id == target.id).cloned() else {
+                    return;
+                };
+                let (dir, id) = (self.dir.clone(), item.id.clone());
+                self.spawn_mail(
+                    &item,
+                    "刪除",
+                    format!("已刪除「{}」", item.title),
+                    move || crate::mail_action::delete(&dir, &id).map(|()| None),
+                );
+            }
+            mail_prompt::Action::Rsvp { response, comment } => {
+                let Some(mail_prompt::Prompt::Rsvp { id, organizer, .. }) = self.mail_prompt.take()
+                else {
+                    return;
+                };
+                let Some(item) = self.rows.iter().find(|row| row.id == id).cloned() else {
+                    return;
+                };
+                let (dir, kept) = (self.dir.clone(), item.clone());
+                self.spawn_mail(
+                    &item,
+                    "回覆邀請",
+                    format!(
+                        "已寄送 METHOD:REPLY（{}）給 {organizer}；未修改本機或伺服器行事曆",
+                        response.partstat()
+                    ),
+                    move || {
+                        crate::meeting_rsvp::respond(&dir, &id, response, comment.as_deref(), false)
+                            .map(|_| Some(kept))
+                    },
+                );
+            }
+            mail_prompt::Action::Save { index, path } => {
+                let Some(mail_prompt::Prompt::Attachment { id, notice, .. }) =
+                    self.mail_prompt.as_mut()
+                else {
+                    return;
+                };
+                match crate::mail_action::save_attachment(&self.dir, id, index, &path) {
+                    Ok((_, bytes)) => {
+                        self.mail_prompt = None;
+                        self.status = format!("附件已存到 {}（{bytes} bytes）", path.display());
+                    }
+                    Err(error) => *notice = Some(format!("{error:#}")),
+                }
+            }
+        }
+    }
+
+    fn spawn_mail(
+        &mut self,
+        item: &Item,
+        action: &str,
+        done: String,
+        work: impl FnOnce() -> Result<Option<Item>> + Send + 'static,
+    ) {
+        let dir = self.dir.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(work().map_err(|error| crate::mail_reply::masked_error(&dir, error)));
+        });
+        self.status = format!("正在{action}「{}」...", item.title);
+        self.pending_mail = Some(MailJob {
+            id: item.id.clone(),
+            action: action.into(),
+            done,
+            receiver: rx,
+        });
+    }
+
+    fn poll_mail(&mut self) -> Result<bool> {
+        let Some(result) = self
+            .pending_mail
+            .as_ref()
+            .and_then(|job| receive(&job.receiver))
+        else {
+            return Ok(false);
+        };
+        let job = self.pending_mail.take().expect("mail job");
+        match result {
+            Ok(Some(updated)) => {
+                if let Some(row) = self.rows.iter_mut().find(|row| row.id == job.id) {
+                    row.flags = updated.flags;
+                }
+                self.status = job.done;
+            }
+            Ok(None) => {
+                self.close_detail();
+                self.reload()?;
+                self.status = job.done;
+            }
+            Err(error) => self.status = format!("{}失敗：{error:#}", job.action),
+        }
+        Ok(true)
     }
 
     fn start_event_create(&mut self) {
@@ -974,6 +1304,7 @@ impl App {
     fn poll_background(&mut self) -> Result<bool> {
         let mut dirty = self.room_finder.poll();
         dirty |= self.poll_send();
+        dirty |= self.poll_mail()?;
         dirty |= self.poll_event()?;
         if Instant::now() >= self.progress_due {
             self.progress_due = Instant::now() + Duration::from_millis(500);
@@ -1162,11 +1493,22 @@ impl App {
                 .as_ref()
                 .is_some_and(|flow| flow.phase == reply::Phase::Sending)
             {
-                let hint = "回覆寄送中，請等結果再離開（避免重複寄出）";
-                self.status = hint.into();
                 if let Some(flow) = self.reply.as_mut() {
-                    flow.notice = Some(hint.into());
+                    let hint = format!(
+                        "{}寄送中，請等結果再離開（避免重複寄出）",
+                        flow.compose.label()
+                    );
+                    flow.notice = Some(hint.clone());
+                    self.status = hint;
                 }
+                return Ok(false);
+            }
+            if self.pending_mail.is_some() {
+                self.status = "郵件操作進行中，請等結果再離開".into();
+                return Ok(false);
+            }
+            if self.room_finder.writing() {
+                self.room_finder.status = "會議室預約／邀請寄送中，請等結果再離開".into();
                 return Ok(false);
             }
             if self
@@ -1210,6 +1552,10 @@ impl App {
         }
         if self.event_form.is_some() {
             self.event_key(key);
+            return Ok(false);
+        }
+        if self.mail_prompt.is_some() {
+            self.mail_prompt_key(key);
             return Ok(false);
         }
         if self.help {
@@ -1274,6 +1620,19 @@ impl App {
                 self.start_reply(std::env::var("EDITOR").ok())
             }
             KeyCode::Char('R') if self.tab == 0 => self.start_reply(std::env::var("EDITOR").ok()),
+            KeyCode::Char('f') if self.tab == 0 && key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.start_forward(std::env::var("EDITOR").ok())
+            }
+            KeyCode::Char('F') if self.tab == 0 => self.start_forward(std::env::var("EDITOR").ok()),
+            KeyCode::Char('c') if self.tab == 0 => {
+                self.start_new_mail(std::env::var("EDITOR").ok())
+            }
+            KeyCode::Char('s') if self.tab == 0 => self.toggle_flag("\\Seen"),
+            KeyCode::Char('f') if self.tab == 0 => self.toggle_flag("\\Flagged"),
+            KeyCode::Char('m') if self.tab == 0 => self.start_move(),
+            KeyCode::Char('x') if self.tab == 0 => self.start_delete(),
+            KeyCode::Char('a') if self.tab == 0 => self.start_attachment(),
+            KeyCode::Char('i') if self.tab == 0 => self.start_rsvp(),
             KeyCode::Char('r') if self.tab == 2 && key.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.start_directory_sync()
             }
@@ -1424,7 +1783,7 @@ impl App {
     }
 
     fn mouse(&mut self, mouse: MouseEvent) -> Result<()> {
-        if self.reply.is_some() || self.event_form.is_some() {
+        if self.reply.is_some() || self.event_form.is_some() || self.mail_prompt.is_some() {
             return Ok(());
         }
         if self.hits.tabs.is_empty() {
@@ -1636,7 +1995,12 @@ impl App {
             String::new()
         };
         let hint = if self.tab == 3 {
-            "Tab 欄位 · Enter 查詢／段內起迄 · F5 更新 · Esc 返回 · Ctrl-C 離開 · ? 說明".into()
+            self.room_finder
+                .hint()
+                .unwrap_or(
+                    "Tab 欄位 · Enter 查詢／段內起迄 · F5 更新 · Esc 返回 · Ctrl-C 離開 · ? 說明",
+                )
+                .into()
         } else if self.tab == 1 {
             let unit = match self.calendar.view {
                 calendar::CalendarView::ThreeDay => "日",
@@ -1648,8 +2012,13 @@ impl App {
             "q 離開 · 1/2/3/4 頁籤 · / 搜尋 · [ ] 翻頁 · v 組織圖 · r 讀本機 · Shift-R 同步公司 · ? 說明"
                 .into()
         } else {
-            "q 離開 · 1/2/3/4 頁籤 · ↑↓ 選取 · Enter 詳情 · R 回覆 · / 搜尋 · [ ] 翻頁 · r 更新 · ? 說明"
-                .into()
+            if self.detail {
+                "Esc 返回 · R 回覆 · F 轉寄 · a 存附件 · i 回覆邀請 · s 已讀 · f 星號 · m 移動 · x 刪除 · ? 說明"
+                    .into()
+            } else {
+                "q 離開 · 1/2/3/4 頁籤 · Enter 詳情 · / 搜尋 · r 更新 · c 寫信 · s/f 已讀/星號 · m 移動 · x 刪除 · ? 說明"
+                    .into()
+            }
         };
         frame.render_widget(
             Paragraph::new(vec![
@@ -1680,6 +2049,9 @@ impl App {
         }
         if let Some(form) = &self.event_form {
             draw_event_form(frame, area, form);
+        }
+        if let Some(prompt) = &self.mail_prompt {
+            draw_mail_prompt(frame, area, prompt);
         }
         if self.help {
             self.draw_help(frame, area);
@@ -2020,13 +2392,25 @@ impl App {
             } else {
                 "按 Enter 或點擊列表載入正文。"
             };
+            let invite = (item.kind == Kind::Mail && self.detail && !item.raw.is_empty())
+                .then(|| mail::raw_bytes(item).ok())
+                .flatten()
+                .and_then(|raw| {
+                    crate::meeting_rsvp::invite_summary(
+                        &raw,
+                        self.config.as_ref().map(|cfg| cfg.email.as_str()),
+                    )
+                    .ok()
+                })
+                .map(|invite| format_invite(&invite))
+                .unwrap_or_default();
             format!(
                 "{}
 {}
 {}
 資料夾：{}
 {}{}
-{}",
+{invite}{}",
                 item.title,
                 item.subtitle,
                 item.date.as_deref().map(display_time).unwrap_or_default(),
@@ -2075,7 +2459,7 @@ impl App {
 
     fn draw_help(&self, frame: &mut Frame, area: Rect) {
         let width = area.width.min(80);
-        let height = area.height.min(22);
+        let height = area.height.min(if self.tab == 1 { 20 } else { 29 });
         let popup = Rect::new(
             area.x + (area.width - width) / 2,
             area.y + (area.height - height) / 2,
@@ -2088,7 +2472,7 @@ impl App {
                 .block(block(" 行事曆操作說明 ")).wrap(Wrap { trim: false }), popup);
             return;
         }
-        frame.render_widget(Paragraph::new("1 / 2 / 3 / 4、Tab     郵件、行事曆、聯絡人、找會議室\n↑ / ↓、j / k           選取資料 / 捲動詳情\n← / →、h / l           切換資料夾\nEnter / Esc            開啟詳情 / 返回列表\n郵件詳情內 R          回覆草稿（$EDITOR；確認後才寄出）\n/ 或點搜尋框           搜尋中文或英文\nEnter 或停止輸入       合併本機 + IMAP 搜尋（離線保留本機結果）\n[ / ]、PageUp/Down     前後頁 / 捲動詳情\ng / G、Home / End      第一頁 / 最後一頁\nr                      郵件增量；行事曆 ±30 天；聯絡人讀本機\n聯絡人 Shift-R         手動背景同步全公司目錄\n聯絡人 v              列表／組織圖；Enter 展開收合部門\n滑鼠                   點頁籤、資料夾、列、搜尋框、上一頁/下一頁\n滾輪                   捲動游標所在資料夾、列表或詳情\n會議室時間             明天 14:00 / 下週一 下午兩點（台北；RFC3339 亦可）\n會議室預設             6 人 · 120 分 · 09:30-17:30\n結束留空               從開始找當日空檔；清空分鐘需填結束\n會議室 Enter           查詢；分鐘結果再 Enter 於空檔內挑實際起迄\n? / Esc                關閉說明\nq / Ctrl-C             離開（表單內 Ctrl-C）").block(block(" 操作說明 ")).wrap(Wrap{trim:false}),popup);
+        frame.render_widget(Paragraph::new("1 / 2 / 3 / 4、Tab     郵件、行事曆、聯絡人、找會議室\n↑ / ↓、j / k           選取資料 / 捲動詳情\n← / →、h / l           切換資料夾\nEnter / Esc            開啟詳情 / 返回列表\n郵件詳情內 R          回覆草稿（$EDITOR；確認後才寄出）\n郵件詳情內 F / 郵件 c  轉寄／寫新信（同回覆草稿與確認畫面）\n郵件 s / f             切換已讀／星號（立即寫入伺服器）\n郵件 m / x             移動／刪除選取郵件（確認畫面 y 才執行）\n郵件詳情內 a           存附件（預設 ~/Downloads，不覆寫）\n郵件詳情內 i           回覆會議邀請：接受／拒絕／暫定（確認畫面 y 才寄出）\n/ 或點搜尋框           搜尋中文或英文\nEnter 或停止輸入       合併本機 + IMAP 搜尋（離線保留本機結果）\n[ / ]、PageUp/Down     前後頁 / 捲動詳情\ng / G、Home / End      第一頁 / 最後一頁\nr                      郵件增量；行事曆 ±30 天；聯絡人讀本機\n聯絡人 Shift-R         手動背景同步全公司目錄\n聯絡人 v              列表／組織圖；Enter 展開收合部門\n滑鼠                   點頁籤、資料夾、列、搜尋框、上一頁/下一頁\n滾輪                   捲動游標所在資料夾、列表或詳情\n會議室時間             明天 14:00 / 下週一 下午兩點（台北；RFC3339 亦可）\n會議室預設             6 人 · 120 分 · 09:30-17:30\n結束留空               從開始找當日空檔；清空分鐘需填結束\n會議室 Enter           查詢；分鐘結果再 Enter 於空檔內挑實際起迄\n草稿畫面 b             live 檢查（同 book --dry-run），確認畫面 y 才預約\n預約完成後 i           確認收件人後 y 寄出會議邀請（METHOD:REQUEST）\n? / Esc                關閉說明\nq / Ctrl-C             離開（表單內 Ctrl-C）").block(block(" 操作說明 ")).wrap(Wrap{trim:false}),popup);
     }
 }
 
@@ -2294,32 +2678,65 @@ fn draw_reply(frame: &mut Frame, area: Rect, flow: &reply::ReplyFlow, syncing: b
     frame.render_widget(Clear, area);
     let inner_height = area.height.saturating_sub(2) as usize;
     let notice = |flow: &reply::ReplyFlow| flow.notice.clone().unwrap_or_default();
+    let label = flow.compose.label();
+    let draft_title = format!(" {label}草稿 ");
     let (title, text) = match flow.phase {
         reply::Phase::Editing => {
             let lines = flow.text.split('\n').count();
             let mut shown = flow.text.clone();
             shown.push('_');
-            let skip = lines.saturating_sub(inner_height.saturating_sub(2));
+            let skip = lines.saturating_sub(inner_height.saturating_sub(3));
             let body = shown.split('\n').skip(skip).collect::<Vec<_>>().join("\n");
+            let guide = match flow.compose {
+                reply::Compose::Reply => "",
+                reply::Compose::Forward => "依序輸入：收件人 → Enter 兩次 → 前言（可留空）；原信會以附件附上\n",
+                reply::Compose::New => "依序輸入：收件人 → Enter → Subject: 主旨 → Enter 兩次 → 正文（Cc: 可另起一行）\n",
+            };
             (
-                " 回覆草稿 · 內建輸入只能在文末追加（改收件人／主旨請設 $EDITOR）· Ctrl-D 完成 · Esc 存草稿 ",
-                format!("{body}\n\n{}", notice(flow)),
+                format!(
+                    " {label}草稿 · 內建輸入只能在文末追加（改收件人／主旨請設 $EDITOR）· Ctrl-D 完成 · Esc 存草稿 "
+                ),
+                format!("{body}\n\n{guide}{}", notice(flow)),
             )
         }
-        reply::Phase::External => (" 回覆草稿 ", "編輯器執行中…".to_string()),
+        reply::Phase::External => (draft_title, "編輯器執行中…".to_string()),
         reply::Phase::Sending => (
-            " 回覆草稿 ",
+            draft_title,
             format!("正在寄出，請稍候…\n\n{}", notice(flow)),
         ),
         reply::Phase::Confirm => {
             let (head, preview) = match flow.check() {
-                Ok((headers, body)) => (
+                Ok(reply::Ready::Reply(headers, body)) => (
                     format!(
                         "To: {}\nSubject: {}",
                         headers.to.join(", "),
                         headers.subject
                     ),
                     body,
+                ),
+                Ok(reply::Ready::Forward { to, introduction }) => (
+                    format!(
+                        "To: {}\nSubject: Fwd: 原信主旨（自動）\n原信以 forwarded.eml 附件附上",
+                        to.join(", ")
+                    ),
+                    if introduction.is_empty() {
+                        "（沒有前言）".into()
+                    } else {
+                        introduction
+                    },
+                ),
+                Ok(reply::Ready::New(mail)) => (
+                    format!(
+                        "To: {}{}\nSubject: {}",
+                        mail.to.join(", "),
+                        if mail.cc.is_empty() {
+                            String::new()
+                        } else {
+                            format!("\nCc: {}", mail.cc.join(", "))
+                        },
+                        mail.subject
+                    ),
+                    mail.body,
                 ),
                 Err(reason) => (format!("（草稿尚不能寄出：{reason}）"), flow.text.clone()),
             };
@@ -2350,7 +2767,7 @@ fn draw_reply(frame: &mut Frame, area: Rect, flow: &reply::ReplyFlow, syncing: b
                 "y 確認寄出 · d 只存草稿 · e 繼續編輯 · Esc 存草稿離開"
             };
             (
-                " 確認回覆 ",
+                format!(" 確認{label} "),
                 format!("{head}\n\n{preview}\n\n{}\n{keys}{busy}", notice(flow)),
             )
         }
@@ -2363,6 +2780,160 @@ fn draw_reply(frame: &mut Frame, area: Rect, flow: &reply::ReplyFlow, syncing: b
             paragraph.wrap(Wrap { trim: false })
         },
         area,
+    );
+}
+
+fn format_invite(invite: &crate::meeting_rsvp::InviteSummary) -> String {
+    let taipei = |value: &Option<String>| {
+        value
+            .as_deref()
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            .map(|date| date.with_timezone(&chrono_tz::Asia::Taipei))
+    };
+    let (start, end) = (taipei(&invite.start), taipei(&invite.end));
+    let start_text = start.map_or_else(
+        || "（未提供）".into(),
+        |date| date.format("%Y-%m-%d %H:%M").to_string(),
+    );
+    let end_text = match (start, end) {
+        (Some(start), Some(end)) if start.date_naive() == end.date_naive() => {
+            end.format("%H:%M").to_string()
+        }
+        (_, Some(end)) => end.format("%Y-%m-%d %H:%M").to_string(),
+        (_, None) => "（未提供）".into(),
+    };
+    format!(
+        "── 會議邀請 ──\n主題：{}\n主辦人：{}\n時間：{start_text} – {end_text}（台北）\n地點：{}\n我的回覆：{}\n按 i 回覆邀請（接受／拒絕／暫定）\n\n",
+        invite.summary,
+        invite.organizer.as_deref().unwrap_or("（未提供）"),
+        invite.location.as_deref().unwrap_or("（未提供）"),
+        invite.partstat.as_deref().unwrap_or("未知"),
+    )
+}
+
+fn rsvp_name(response: crate::meeting_rsvp::RsvpResponse) -> &'static str {
+    use crate::meeting_rsvp::RsvpResponse;
+    match response {
+        RsvpResponse::Accept => "接受",
+        RsvpResponse::Decline => "拒絕",
+        RsvpResponse::Tentative => "暫定",
+    }
+}
+
+fn draw_mail_prompt(frame: &mut Frame, area: Rect, prompt: &mail_prompt::Prompt) {
+    use mail_prompt::Prompt;
+    let width = area.width.min(76);
+    let height = area.height.min(14);
+    let popup = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, popup);
+    let (title, text) = match prompt {
+        Prompt::Move {
+            target,
+            input,
+            folders,
+            confirm: false,
+            notice,
+        } => (
+            " 移動郵件 ",
+            format!(
+                "「{}」\n目前資料夾：{}\n\n目標資料夾：{input}_\n{}\n\n{}\nEnter 下一步 · Esc 取消",
+                target.subject,
+                target.folder,
+                if folders.is_empty() {
+                    "（本機沒有其他資料夾，請輸入伺服器上的資料夾名稱）".to_string()
+                } else {
+                    format!("Tab 輪選：{}", folders.join(" · "))
+                },
+                notice.clone().unwrap_or_default()
+            ),
+        ),
+        Prompt::Move { target, input, .. } => (
+            " 確認移動 ",
+            format!(
+                "把「{}」\n從 {} 移到 {}？\n\n移動後本機先移除，按 r 同步後會出現在新資料夾。\n\ny 確認移動 · Esc 取消",
+                target.subject,
+                target.folder,
+                input.trim()
+            ),
+        ),
+        Prompt::Delete { target } => (
+            " 確認刪除 ",
+            format!(
+                "刪除「{}」（{}）？\n\n會移到伺服器的垃圾桶資料夾（Trash 等）；找不到垃圾桶時直接永久刪除。\n\ny 確認刪除 · Esc 取消",
+                target.subject, target.folder
+            ),
+        ),
+        Prompt::Rsvp {
+            summary,
+            organizer,
+            response,
+            comment,
+            confirm: false,
+            ..
+        } => (
+            " 回覆會議邀請 ",
+            format!(
+                "「{summary}」\n主辦人：{organizer}\n\n回覆：{}\n附註（COMMENT，可留空）：{comment}_\n\n←→ / Tab 切換回覆 · 輸入附註 · Enter 下一步 · Esc 取消",
+                mail_prompt::RSVP_RESPONSES
+                    .iter()
+                    .map(|option| if option == response {
+                        format!("[{}]", rsvp_name(*option))
+                    } else {
+                        format!(" {} ", rsvp_name(*option))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+        ),
+        Prompt::Rsvp {
+            summary,
+            organizer,
+            response,
+            comment,
+            ..
+        } => (
+            " 確認回覆邀請 ",
+            format!(
+                "會議：「{summary}」\n寄給主辦人：{organizer}\n回覆：{}（PARTSTAT={}）\n附註：{}\n\n只寄出一封 METHOD:REPLY，不修改本機或伺服器行事曆；不會重試。\n\ny 寄出 · Esc 取消",
+                rsvp_name(*response),
+                response.partstat(),
+                if comment.trim().is_empty() { "（無）" } else { comment.trim() }
+            ),
+        ),
+        Prompt::Attachment {
+            names,
+            selected,
+            dir,
+            notice,
+            ..
+        } => (
+            " 儲存附件 ",
+            format!(
+                "{}\n\n存到目錄：{dir}_\n{}\n\n↑↓ 選附件 · 輸入／Backspace 改目錄 · Enter 儲存（不覆寫）· Esc 取消",
+                names
+                    .iter()
+                    .enumerate()
+                    .map(|(index, name)| format!(
+                        "{} {}",
+                        if index == *selected { ">" } else { " " },
+                        name
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                notice.clone().unwrap_or_default()
+            ),
+        ),
+    };
+    frame.render_widget(
+        Paragraph::new(text)
+            .block(block(title).border_style(Style::default().fg(ACCENT)))
+            .wrap(Wrap { trim: false }),
+        popup,
     );
 }
 
@@ -3519,6 +4090,11 @@ mod tests {
         }
         assert_eq!(app.tab, 0);
         assert_eq!(app.calendar.view, Month);
+        assert!(
+            matches!(app.mail_prompt, Some(mail_prompt::Prompt::Move { .. })),
+            "郵件頁的 m 是移動郵件"
+        );
+        type_keys(&mut app, &[KeyCode::Esc]);
         app.key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE))
             .unwrap();
         assert_eq!(app.tab, 1);
@@ -4254,5 +4830,702 @@ mod tests {
         assert!(std::fs::read_to_string(&drafts[0])
             .unwrap()
             .contains("標題: 草稿"));
+    }
+
+    fn settle_mail(app: &mut App) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while app.pending_mail.is_some() || app.pending_send.is_some() {
+            assert!(Instant::now() < deadline, "mail write did not finish");
+            app.poll_background().unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn select_id(app: &mut App, id: &str) {
+        let index = app.rows.iter().position(|row| row.id == id).unwrap();
+        app.table.select(Some(index));
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for c in text.chars() {
+            let code = if c == '\n' {
+                KeyCode::Enter
+            } else {
+                KeyCode::Char(c)
+            };
+            type_keys(app, &[code]);
+        }
+    }
+
+    fn demo_mail_app() -> (tempfile::TempDir, App) {
+        let temp = tempdir().unwrap();
+        crate::demo::seed_without_rooms(temp.path()).unwrap();
+        let app = App::new(temp.path()).unwrap();
+        (temp, app)
+    }
+
+    #[test]
+    fn move_and_delete_confirm_name_the_mail_and_folder_and_esc_writes_nothing() {
+        let (temp, mut app) = demo_mail_app();
+        select_id(&mut app, "demo-mail-2");
+        type_keys(&mut app, &[KeyCode::Char('m')]);
+        type_text(&mut app, "Archive");
+        assert!(rendered_text(&mut app, 120, 32, false).contains("移動郵件"));
+        type_keys(&mut app, &[KeyCode::Enter]);
+        let screen = rendered_text(&mut app, 120, 32, false);
+        assert!(screen.contains("確認移動"), "{screen}");
+        assert!(screen.contains("本週產品同步會議") && screen.contains("移到 Archive"));
+        type_keys(&mut app, &[KeyCode::Esc]);
+        assert!(app.mail_prompt.is_none() && app.pending_mail.is_none());
+        assert!(app.status.contains("已取消"));
+
+        type_keys(&mut app, &[KeyCode::Char('x')]);
+        let screen = rendered_text(&mut app, 120, 32, false);
+        assert!(screen.contains("確認刪除") && screen.contains("本週產品同步會議"));
+        assert!(screen.contains("收件匣"), "{screen}");
+        type_keys(&mut app, &[KeyCode::Char('q')]);
+        assert!(app.mail_prompt.is_some(), "q 不會在確認畫面離開");
+        type_keys(&mut app, &[KeyCode::Esc]);
+        assert!(app.mail_prompt.is_none() && app.pending_mail.is_none());
+        let store = Store::open_reader(temp.path()).unwrap();
+        assert_eq!(store.get("demo-mail-2").unwrap().collection, "INBOX");
+    }
+
+    #[test]
+    fn demo_refuses_flag_move_and_delete_with_the_cli_reason() {
+        let (temp, mut app) = demo_mail_app();
+        select_id(&mut app, "demo-mail-1");
+        type_keys(&mut app, &[KeyCode::Char('s')]);
+        settle_mail(&mut app);
+        assert!(
+            app.status.contains("標為已讀失敗")
+                && app.status.contains(crate::mail_action::DEMO_OFFLINE),
+            "{}",
+            app.status
+        );
+        assert!(app
+            .rows
+            .iter()
+            .any(|row| row.id == "demo-mail-1" && row.flags.is_empty()));
+        type_keys(&mut app, &[KeyCode::Char('m')]);
+        type_text(&mut app, "Archive");
+        type_keys(&mut app, &[KeyCode::Enter, KeyCode::Char('y')]);
+        settle_mail(&mut app);
+        assert!(app.status.starts_with("移動失敗") && app.status.contains("展示資料不連線"));
+        type_keys(&mut app, &[KeyCode::Char('x'), KeyCode::Char('y')]);
+        settle_mail(&mut app);
+        assert!(app.status.starts_with("刪除失敗") && app.status.contains("展示資料不連線"));
+        let store = Store::open_reader(temp.path()).unwrap();
+        let item = store.get("demo-mail-1").unwrap();
+        assert_eq!((item.collection.as_str(), item.flags.len()), ("INBOX", 0));
+    }
+
+    #[test]
+    fn demo_new_mail_and_forward_reuse_the_composer_and_only_save_drafts() {
+        let (temp, mut app) = demo_mail_app();
+        type_keys(&mut app, &[KeyCode::Char('c')]);
+        assert_eq!(app.reply.as_ref().unwrap().compose, reply::Compose::New);
+        app.reply = None;
+        app.editor_request = None;
+        app.start_new_mail(None);
+        type_text(&mut app, "bob@example.test\nSubject: 測試\n\n內文");
+        app.key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL))
+            .unwrap();
+        let screen = rendered_text(&mut app, 120, 32, false);
+        assert!(
+            screen.contains("確認新郵件") && screen.contains("Subject: 測試"),
+            "{screen}"
+        );
+        type_keys(&mut app, &[KeyCode::Char('y')]);
+        assert!(app.pending_send.is_none(), "demo 不可寄送");
+        type_keys(&mut app, &[KeyCode::Char('d')]);
+        assert!(app.status.contains("drafts/mail-"), "{}", app.status);
+
+        select_id(&mut app, "demo-mail-2");
+        type_keys(&mut app, &[KeyCode::Char('F')]);
+        assert!(app.reply.is_none() && app.status.contains("按 F 轉寄"));
+        app.open_detail().unwrap();
+        app.start_forward(None);
+        type_text(&mut app, "bob@example.test");
+        app.key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL))
+            .unwrap();
+        let screen = rendered_text(&mut app, 120, 32, false);
+        assert!(
+            screen.contains("確認轉寄") && screen.contains("forwarded.eml"),
+            "{screen}"
+        );
+        type_keys(&mut app, &[KeyCode::Char('y')]);
+        assert!(app.pending_send.is_none());
+        type_keys(&mut app, &[KeyCode::Esc]);
+        let names = std::fs::read_dir(temp.path().join("drafts"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(names.iter().any(|name| name.starts_with("forward-")));
+    }
+
+    #[test]
+    fn attachment_is_saved_under_the_chosen_directory_and_never_overwrites() {
+        let (_temp, mut app) = demo_mail_app();
+        let out = tempdir().unwrap();
+        select_id(&mut app, "demo-mail-1");
+        type_keys(&mut app, &[KeyCode::Char('a')]);
+        assert!(app.mail_prompt.is_none() && app.status.contains("按 Enter"));
+        app.open_detail().unwrap();
+        let save = |app: &mut App| {
+            type_keys(app, &[KeyCode::Char('a')]);
+            assert!(rendered_text(app, 120, 32, false).contains("welcome.txt"));
+            for _ in mail_prompt::DEFAULT_SAVE_DIR.chars() {
+                type_keys(app, &[KeyCode::Backspace]);
+            }
+            type_text(app, &out.path().display().to_string());
+            type_keys(app, &[KeyCode::Enter]);
+        };
+        save(&mut app);
+        let path = out.path().join("welcome.txt");
+        assert!(app.mail_prompt.is_none());
+        assert!(
+            app.status.contains(&path.display().to_string()),
+            "{}",
+            app.status
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "Offline attachment demo"
+        );
+
+        std::fs::write(&path, "使用者自己的檔案").unwrap();
+        save(&mut app);
+        let Some(mail_prompt::Prompt::Attachment { notice, .. }) = &app.mail_prompt else {
+            panic!("prompt stays open after a refusal");
+        };
+        assert!(notice.as_deref().unwrap().contains("不覆寫"), "{notice:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "使用者自己的檔案");
+    }
+
+    fn demo_invite_app() -> (tempfile::TempDir, App) {
+        let temp = tempdir().unwrap();
+        crate::demo::seed_without_rooms(temp.path()).unwrap();
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:plan-7@example.test\r\nSEQUENCE:0\r\nDTSTAMP:20261018T000000Z\r\nDTSTART;TZID=Asia/Taipei:20261021T140000\r\nDTEND;TZID=Asia/Taipei:20261021T150000\r\nSUMMARY:季度規劃\r\nLOCATION:北區範例會議室\r\nORGANIZER;CN=Carol:mailto:carol@example.test\r\nATTENDEE;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:demo@example.test\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let raw = format!(
+            "From: carol@example.test\r\nTo: demo@example.test\r\nSubject: plan\r\nMessage-ID: <plan-7@example.test>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n請參加\r\n--b\r\nContent-Type: text/calendar; method=REQUEST; charset=utf-8\r\n\r\n{ics}--b--\r\n"
+        );
+        Store::open(temp.path())
+            .unwrap()
+            .upsert(&Item {
+                id: "demo-invite".into(),
+                kind: Kind::Mail,
+                collection: "INBOX".into(),
+                remote_id: "9".into(),
+                etag: None,
+                uid_validity: Some(1),
+                title: "季度規劃邀請".into(),
+                subtitle: "carol@example.test".into(),
+                date: None,
+                end_date: None,
+                text: "請參加".into(),
+                raw,
+                flags: vec![],
+                emails: vec![],
+                phones: vec![],
+                attachments: vec![],
+            })
+            .unwrap();
+        let mut app = App::new(temp.path()).unwrap();
+        select_id(&mut app, "demo-invite");
+        app.open_detail().unwrap();
+        (temp, app)
+    }
+
+    #[test]
+    fn invite_mail_shows_its_summary_and_rsvp_confirm_names_meeting_organizer_and_answer() {
+        let (_temp, mut app) = demo_invite_app();
+        let detail = rendered_text(&mut app, 200, 40, true);
+        for shown in [
+            "會議邀請",
+            "主題：季度規劃",
+            "主辦人：carol@example.test",
+            "時間：2026-10-21 14:00 – 15:00（台北）",
+            "地點：北區範例會議室",
+            "我的回覆：NEEDS-ACTION",
+            "按 i 回覆邀請",
+        ] {
+            assert!(detail.contains(shown), "missing {shown}:\n{detail}");
+        }
+
+        type_keys(&mut app, &[KeyCode::Char('i')]);
+        let screen = rendered_text(&mut app, 120, 32, false);
+        assert!(
+            screen.contains("回覆會議邀請") && screen.contains("[接受]"),
+            "{screen}"
+        );
+        type_keys(&mut app, &[KeyCode::Right]);
+        type_text(&mut app, "出差");
+        type_keys(&mut app, &[KeyCode::Enter]);
+        let screen = rendered_text(&mut app, 120, 32, false);
+        for shown in [
+            "確認回覆邀請",
+            "「季度規劃」",
+            "寄給主辦人：carol@example.test",
+            "拒絕（PARTSTAT=DECLINED）",
+            "附註：出差",
+            "y 寄出",
+        ] {
+            assert!(screen.contains(shown), "missing {shown}:\n{screen}");
+        }
+        type_keys(&mut app, &[KeyCode::Esc]);
+        assert!(app.mail_prompt.is_none() && app.pending_mail.is_none());
+        assert!(app.status.contains("已取消，沒有變更"), "{}", app.status);
+        assert!(app.detail, "Esc 只關確認畫面，不離開詳情");
+    }
+
+    #[test]
+    fn demo_refuses_the_rsvp_send_with_the_cli_reason_and_plain_mail_has_no_rsvp() {
+        let (_temp, mut app) = demo_invite_app();
+        type_keys(
+            &mut app,
+            &[KeyCode::Char('i'), KeyCode::Enter, KeyCode::Char('y')],
+        );
+        settle_mail(&mut app);
+        assert!(
+            app.status.contains("回覆邀請失敗：展示資料不提供實際寄信"),
+            "{}",
+            app.status
+        );
+
+        app.close_detail();
+        select_id(&mut app, "demo-mail-2");
+        app.open_detail().unwrap();
+        assert!(!rendered_text(&mut app, 200, 40, true).contains("會議邀請"));
+        type_keys(&mut app, &[KeyCode::Char('i')]);
+        assert!(app.mail_prompt.is_none() && app.pending_mail.is_none());
+        assert!(app.status.contains("沒有會議邀請"), "{}", app.status);
+    }
+
+    #[test]
+    fn rsvp_against_fixture_sends_one_reply_with_the_chosen_partstat() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        const PASSWORD: &str = "isolated-fixture-password";
+        let root = tempdir().unwrap();
+        let info = fixture::start(fixture::Options {
+            data_dir: root.path().join("fixture"),
+            user: "fixture@example.test".into(),
+            password: PASSWORD.into(),
+            imap_port: 0,
+            smtp_port: 0,
+            http_port: 0,
+            sync_collection: false,
+        })
+        .unwrap();
+        std::env::set_var("M2K_PASSWORD", PASSWORD);
+        std::env::set_var("M2K_TEST_ROOT_CERT", &info.ca_cert);
+        std::env::set_var("M2K_KEYCHAIN", "/nonexistent/m2k-test.keychain-db");
+        let dir = root.path().join("client");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = Config::with_site_profile(info.user.clone(), &info.server, None).unwrap();
+        cfg.imap_port = info.imap_port;
+        cfg.smtp_port = info.smtp_port;
+        config::save(&dir, &cfg).unwrap();
+        Store::open(&dir).unwrap().ensure_account(&cfg).unwrap();
+        sync::run(&dir, &[Kind::Mail]).unwrap();
+        let mut app = App::new(&dir).unwrap();
+        let index = app
+            .rows
+            .iter()
+            .position(|row| row.title == "季度回顧會議")
+            .expect("fixture invite");
+        app.table.select(Some(index));
+        app.open_detail().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while app.opened_mail().is_none() {
+            assert!(Instant::now() < deadline, "body did not load");
+            app.poll_background().unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let detail = rendered_text(&mut app, 200, 40, true);
+        assert!(detail.contains("我的回覆：NEEDS-ACTION"), "{detail}");
+
+        type_keys(
+            &mut app,
+            &[KeyCode::Char('i'), KeyCode::Left, KeyCode::Enter],
+        );
+        assert!(
+            fixture_events(&info, "smtp.message").is_empty(),
+            "nothing before y"
+        );
+        type_keys(&mut app, &[KeyCode::Char('y')]);
+        assert!(app.status.starts_with("正在回覆邀請"), "{}", app.status);
+        let quit = app
+            .key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert!(!quit, "Ctrl-C 等寄送結果");
+        settle_mail(&mut app);
+        assert!(
+            app.status
+                .contains("已寄送 METHOD:REPLY（TENTATIVE）給 carol@example.test"),
+            "{}",
+            app.status
+        );
+        assert!(app.detail, "回覆後仍停在詳情");
+        let sent = fixture_events(&info, "smtp.message");
+        assert_eq!(sent.len(), 1, "exactly one REPLY: {sent:?}");
+        assert_eq!(sent[0]["to"], serde_json::json!(["carol@example.test"]));
+        let eml = std::fs::read(info.data_dir.join(sent[0]["file"].as_str().unwrap())).unwrap();
+        let ics = crate::meeting_rsvp::invite_from_mail(&eml)
+            .unwrap()
+            .ics
+            .replace("\r\n ", "");
+        assert!(ics.lines().any(|line| line == "METHOD:REPLY"), "{ics}");
+        let attendees = ics
+            .lines()
+            .filter(|line| line.starts_with("ATTENDEE"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            attendees,
+            vec!["ATTENDEE;PARTSTAT=TENTATIVE:mailto:fixture@example.test"]
+        );
+        for name in ["M2K_PASSWORD", "M2K_TEST_ROOT_CERT", "M2K_KEYCHAIN"] {
+            std::env::remove_var(name);
+        }
+    }
+
+    fn settle_rooms(app: &mut App) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while app
+            .room_finder
+            .hint()
+            .is_some_and(|hint| hint.starts_with("背景執行中"))
+        {
+            assert!(Instant::now() < deadline, "room job did not finish");
+            app.poll_background().unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn fixture_room(info: &fixture::Info) -> crate::meeting::MeetingRoom {
+        crate::meeting::MeetingRoom {
+            name: "第一會議室 (A)".into(),
+            access_name: "room-a".into(),
+            site: "總部".into(),
+            capacity: Some(8),
+            calendar_url: info.room_calendar_url.clone(),
+            source: "fixture".into(),
+        }
+    }
+
+    fn future_range(days: i64, hour: u32) -> crate::meeting::TimeRange {
+        let day = (Utc::now() + chrono::Duration::days(days))
+            .with_timezone(&chrono_tz::Asia::Taipei)
+            .date_naive();
+        let start = format!("{day}T{hour:02}:00:00+08:00");
+        let end = format!("{day}T{:02}:00:00+08:00", hour + 1);
+        crate::meeting::parse_time_range(&start, &end).unwrap()
+    }
+
+    #[test]
+    fn demo_room_draft_refuses_booking_with_the_cli_reason_and_writes_nothing() {
+        let temp = tempdir().unwrap();
+        crate::demo::seed(temp.path()).unwrap();
+        let mut app = App::new(temp.path()).unwrap();
+        type_keys(&mut app, &[KeyCode::Char('4')]);
+        let room = crate::meeting::MeetingRoom {
+            name: "北區範例會議室".into(),
+            access_name: "demo-room".into(),
+            site: "北區".into(),
+            capacity: Some(8),
+            calendar_url: "https://mail.example.test/room/".into(),
+            source: "demo".into(),
+        };
+        app.room_finder
+            .open_draft(&room, &future_range(30, 10), "週會", &[]);
+        let before = Store::open(temp.path())
+            .unwrap()
+            .list(Kind::Calendar, None, None, usize::MAX)
+            .unwrap()
+            .len();
+        let screen = rendered_text(&mut app, 120, 40, false);
+        assert!(screen.contains("b 檢查並預約"), "{screen}");
+        type_keys(&mut app, &[KeyCode::Char('y')]);
+        assert!(
+            app.room_finder.hint().unwrap().starts_with("b "),
+            "y alone does nothing"
+        );
+        type_keys(&mut app, &[KeyCode::Char('b')]);
+        settle_rooms(&mut app);
+        let screen = rendered_text(&mut app, 120, 40, false);
+        assert!(screen.contains("無法預約"), "{screen}");
+        assert!(screen.contains("展示資料不提供會議室預約"), "{screen}");
+        type_keys(&mut app, &[KeyCode::Char('y')]);
+        assert!(!rendered_text(&mut app, 120, 40, false).contains("確認預約"));
+        let after = Store::open(temp.path())
+            .unwrap()
+            .list(Kind::Calendar, None, None, usize::MAX)
+            .unwrap()
+            .len();
+        assert_eq!(before, after, "demo booking writes nothing locally");
+    }
+
+    #[test]
+    fn room_booking_against_fixture_checks_confirms_books_and_invites_once() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        const PASSWORD: &str = "isolated-fixture-password";
+        let root = tempdir().unwrap();
+        let info = fixture::start(fixture::Options {
+            data_dir: root.path().join("fixture"),
+            user: "fixture@example.test".into(),
+            password: PASSWORD.into(),
+            imap_port: 0,
+            smtp_port: 0,
+            http_port: 0,
+            sync_collection: false,
+        })
+        .unwrap();
+        std::env::set_var("M2K_PASSWORD", PASSWORD);
+        std::env::set_var("M2K_TEST_ROOT_CERT", &info.ca_cert);
+        std::env::set_var("M2K_KEYCHAIN", "/nonexistent/m2k-test.keychain-db");
+        let dir = root.path().join("client");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = Config::with_site_profile(info.user.clone(), &info.server, None).unwrap();
+        cfg.imap_port = info.imap_port;
+        cfg.smtp_port = info.smtp_port;
+        config::save(&dir, &cfg).unwrap();
+        Store::open(&dir).unwrap().ensure_account(&cfg).unwrap();
+        let mut app = App::new(&dir).unwrap();
+        type_keys(&mut app, &[KeyCode::Char('4')]);
+        let room = fixture_room(&info);
+        let range = future_range(40, 10);
+        app.room_finder
+            .open_draft(&room, &range, "TUI 預約驗收", &["bob@example.test".into()]);
+
+        type_keys(&mut app, &[KeyCode::Char('b')]);
+        settle_rooms(&mut app);
+        let confirm = rendered_text(&mut app, 140, 40, false);
+        for expected in [
+            "live 檢查通過：會議室在這段時間仍空",
+            "會議室：第一會議室 (A)",
+            &format!(
+                "開始：{}（Asia/Taipei）",
+                range.start.format("%Y-%m-%d %H:%M")
+            ),
+            "主旨：TUI 預約驗收",
+            "個人行事曆（fixture@example.test）",
+            "會議室行事曆（",
+        ] {
+            assert!(confirm.contains(expected), "missing {expected}:\n{confirm}");
+        }
+        assert!(
+            fixture_events(&info, "dav.put").is_empty(),
+            "dry-run must not PUT"
+        );
+
+        type_keys(&mut app, &[KeyCode::Esc]);
+        assert!(
+            app.room_finder.status.contains("已取消預約"),
+            "{}",
+            app.room_finder.status
+        );
+        assert!(
+            fixture_events(&info, "dav.put").is_empty(),
+            "Esc must not PUT"
+        );
+
+        type_keys(&mut app, &[KeyCode::Char('b')]);
+        settle_rooms(&mut app);
+        type_keys(&mut app, &[KeyCode::Char('y')]);
+        let quit = app
+            .key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert!(!quit, "Ctrl-C waits for the booking");
+        settle_rooms(&mut app);
+        assert!(
+            app.room_finder.status.contains("已預約 第一會議室 (A)"),
+            "{}",
+            app.room_finder.status
+        );
+        let drafts = dir.canonicalize().unwrap().join("drafts");
+        let invite = drafts.read_dir().unwrap().next().unwrap().unwrap().path();
+        let raw = std::fs::read_to_string(invite.join("invite.ics")).unwrap();
+        let uid = crate::meeting::parse_meeting_ics(&raw).unwrap()[0]
+            .uid
+            .clone()
+            .unwrap();
+        let mut paths = fixture_events(&info, "dav.put")
+            .iter()
+            .map(|put| put["path"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                format!(
+                    "/cgi-bin/cal/caldav/calendars/fixture@example.test/default/{}.ics",
+                    uid.replace('@', "%40")
+                ),
+                format!(
+                    "/cgi-bin/cal/caldav/calendars/room-a@example.test/default/{}.ics",
+                    uid.replace('@', "%40")
+                ),
+            ],
+            "exactly one PUT to my calendar and one to the room"
+        );
+        assert!(
+            fixture_events(&info, "smtp.message").is_empty(),
+            "booking never mails"
+        );
+
+        type_keys(&mut app, &[KeyCode::Char('i')]);
+        let recipients = rendered_text(&mut app, 140, 40, false);
+        assert!(recipients.contains("確認寄送邀請"), "{recipients}");
+        assert!(recipients.contains("bob@example.test"), "{recipients}");
+        type_keys(&mut app, &[KeyCode::Esc]);
+        assert!(
+            fixture_events(&info, "smtp.message").is_empty(),
+            "Esc must not send"
+        );
+        type_keys(&mut app, &[KeyCode::Char('i'), KeyCode::Char('y')]);
+        settle_rooms(&mut app);
+        assert!(
+            app.room_finder
+                .status
+                .contains("已寄送會議邀請給 bob@example.test"),
+            "{}",
+            app.room_finder.status
+        );
+        let sent = fixture_events(&info, "smtp.message");
+        assert_eq!(sent.len(), 1, "exactly one invite: {sent:?}");
+        assert_eq!(sent[0]["to"], serde_json::json!(["bob@example.test"]));
+        let eml = std::fs::read(info.data_dir.join(sent[0]["file"].as_str().unwrap())).unwrap();
+        let ics = crate::meeting_rsvp::invite_from_mail(&eml)
+            .unwrap()
+            .ics
+            .replace("\r\n ", "");
+        assert!(ics.lines().any(|line| line == "METHOD:REQUEST"), "{ics}");
+        assert!(
+            ics.lines().any(|line| line == format!("UID:{uid}")),
+            "{ics}"
+        );
+
+        app.room_finder.open_draft(&room, &range, "撞期會議", &[]);
+        type_keys(&mut app, &[KeyCode::Char('b')]);
+        settle_rooms(&mut app);
+        let conflict = rendered_text(&mut app, 140, 40, false);
+        assert!(conflict.contains("無法預約"), "{conflict}");
+        assert!(conflict.contains("會議室衝突"), "{conflict}");
+        assert!(conflict.contains("invite.ics"), "draft kept: {conflict}");
+        assert_eq!(
+            fixture_events(&info, "dav.put").len(),
+            2,
+            "conflict writes nothing"
+        );
+        for name in ["M2K_PASSWORD", "M2K_TEST_ROOT_CERT", "M2K_KEYCHAIN"] {
+            std::env::remove_var(name);
+        }
+    }
+
+    #[test]
+    fn mail_actions_against_fixture_toggle_rows_send_move_and_delete() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        const PASSWORD: &str = "isolated-fixture-password";
+        let root = tempdir().unwrap();
+        let info = fixture::start(fixture::Options {
+            data_dir: root.path().join("fixture"),
+            user: "fixture@example.test".into(),
+            password: PASSWORD.into(),
+            imap_port: 0,
+            smtp_port: 0,
+            http_port: 0,
+            sync_collection: false,
+        })
+        .unwrap();
+        std::env::set_var("M2K_PASSWORD", PASSWORD);
+        std::env::set_var("M2K_TEST_ROOT_CERT", &info.ca_cert);
+        std::env::set_var("M2K_KEYCHAIN", "/nonexistent/m2k-test.keychain-db");
+        let dir = root.path().join("client");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = Config::with_site_profile(info.user.clone(), &info.server, None).unwrap();
+        cfg.imap_port = info.imap_port;
+        cfg.smtp_port = info.smtp_port;
+        config::save(&dir, &cfg).unwrap();
+        Store::open(&dir).unwrap().ensure_account(&cfg).unwrap();
+        sync::run(&dir, &[Kind::Mail]).unwrap();
+        let mut app = App::new(&dir).unwrap();
+        let id = app.rows[0].id.clone();
+        let seen = |app: &App| {
+            app.rows
+                .iter()
+                .find(|row| row.id == id)
+                .unwrap()
+                .flags
+                .iter()
+                .any(|flag| flag == "\\Seen")
+        };
+        let before = seen(&app);
+        type_keys(&mut app, &[KeyCode::Char('s')]);
+        settle_mail(&mut app);
+        assert_eq!(seen(&app), !before, "{}", app.status);
+        assert!(app.status.contains(if before {
+            "標為未讀"
+        } else {
+            "標為已讀"
+        }));
+        type_keys(&mut app, &[KeyCode::Char('f')]);
+        settle_mail(&mut app);
+        assert!(app.status.contains("已加上星號"), "{}", app.status);
+        assert!(rendered_text(&mut app, 120, 32, false).contains("> *"));
+        let stored = Store::open_reader(&dir).unwrap().get(&id).unwrap();
+        assert!(stored.flags.iter().any(|flag| flag == "\\Flagged"));
+        assert_eq!(fixture_events(&info, "imap.store").len(), 2);
+
+        app.start_new_mail(None);
+        type_text(&mut app, "bob@example.test\nSubject: TUI 新信\n\n內文");
+        app.key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert!(
+            fixture_events(&info, "smtp.message").is_empty(),
+            "nothing before y"
+        );
+        type_keys(&mut app, &[KeyCode::Char('y')]);
+        settle_mail(&mut app);
+        assert!(app.status.starts_with("已寄出新郵件"), "{}", app.status);
+
+        app.open_detail().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while app.opened_mail().is_none() {
+            assert!(Instant::now() < deadline, "body did not load");
+            app.poll_background().unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        app.start_forward(None);
+        type_text(&mut app, "carol@example.test");
+        app.key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL))
+            .unwrap();
+        type_keys(&mut app, &[KeyCode::Char('y')]);
+        settle_mail(&mut app);
+        assert!(app.status.starts_with("已寄出轉寄"), "{}", app.status);
+        assert_eq!(fixture_events(&info, "smtp.message").len(), 2);
+
+        type_keys(&mut app, &[KeyCode::Char('m')]);
+        type_text(&mut app, "Archive");
+        type_keys(&mut app, &[KeyCode::Enter]);
+        assert!(
+            fixture_events(&info, "imap.move").is_empty(),
+            "nothing before y"
+        );
+        type_keys(&mut app, &[KeyCode::Char('y')]);
+        settle_mail(&mut app);
+        assert!(app.status.contains("到 Archive"), "{}", app.status);
+        assert!(app.rows.iter().all(|row| row.id != id));
+        assert!(Store::open_reader(&dir).unwrap().get(&id).is_err());
+
+        let victim = app.rows[app.table.selected().unwrap()].id.clone();
+        type_keys(&mut app, &[KeyCode::Char('x'), KeyCode::Char('y')]);
+        settle_mail(&mut app);
+        assert!(app.status.starts_with("已刪除"), "{}", app.status);
+        assert!(Store::open_reader(&dir).unwrap().get(&victim).is_err());
+        assert_eq!(fixture_events(&info, "imap.move").len(), 2);
+        for name in ["M2K_PASSWORD", "M2K_TEST_ROOT_CERT", "M2K_KEYCHAIN"] {
+            std::env::remove_var(name);
+        }
     }
 }

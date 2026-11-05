@@ -5,7 +5,8 @@ use clap::{CommandFactory, Parser};
 use cli::*;
 use m2k::{
     calendar_event, config, dav_write, demo,
-    model::{Item, Kind, OutgoingMail, SyncResult},
+    mail_action::{self, checked_store, get, online, write_new},
+    model::{Kind, OutgoingMail, SyncResult},
     provider,
     store::Store,
     sync, tui,
@@ -359,23 +360,6 @@ fn kinds(kind: Option<Kind>) -> Vec<Kind> {
     kind.map_or_else(|| vec![Kind::Mail, Kind::Calendar], |k| vec![k])
 }
 
-fn online(dir: &Path) -> Result<(config::Config, String)> {
-    if dir.join(".demo").exists() {
-        bail!("展示資料不連線；請指定正式帳號的 --data-dir");
-    }
-    let cfg = config::load(dir)?;
-    Store::open(dir)?.ensure_account(&cfg)?;
-    let pass = config::password(&cfg)?;
-    Ok((cfg, pass))
-}
-
-fn checked_store(dir: &Path) -> Result<Store> {
-    let mut store = Store::open(dir)?;
-    let cfg = config::load(dir)?;
-    store.ensure_account(&cfg)?;
-    Ok(store)
-}
-
 fn check_credentials(cfg: &config::Config, pass: &str) -> Result<Option<u16>> {
     let fallback = provider::mail::verify(cfg, pass)
         .map_err(|e| anyhow::anyhow!("{}", format!("{e:#}").replace(pass, "[已隱藏]")))?;
@@ -451,17 +435,6 @@ fn read_body(file: &Path) -> Result<String> {
     }
 }
 
-fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .with_context(|| format!("無法建立檔案 {}；不覆寫既有檔案", path.display()))?;
-    file.write_all(bytes)?;
-    Ok(())
-}
-
 fn list(dir: &Path, kind: Kind, args: ListArgs, json: bool) -> Result<()> {
     let store = checked_store(dir)?;
     let items = if json {
@@ -503,14 +476,6 @@ fn list(dir: &Path, kind: Kind, args: ListArgs, json: bool) -> Result<()> {
 
 fn list_row(id: &str, time: &str, title: &str, detail: &str) -> String {
     m2k::plain_output::row(&[(id, 32), (time, 25), (title, 30), (detail, 28)])
-}
-
-fn get(dir: &Path, id: &str, kind: Kind) -> Result<Item> {
-    let item = checked_store(dir)?.get(id)?;
-    if item.kind != kind {
-        bail!("資料類型不符：{}", item.kind);
-    }
-    Ok(item)
 }
 
 fn show(dir: &Path, id: &str, kind: Kind, raw: bool, full: bool, json: bool) -> Result<()> {
@@ -564,29 +529,24 @@ fn mail_command(dir: &Path, cmd: MailCommand, json: bool) -> Result<()> {
         )?,
         MailCommand::Show { id, raw, full } => show(dir, &id, Kind::Mail, raw, full, json)?,
         MailCommand::Attachment { id, index, output } => {
-            let item = get(dir, &id, Kind::Mail)?;
-            let (name, bytes) = provider::mail::attachment(&item, index)?;
-            write_new(&output, &bytes)?;
+            let (name, bytes) = mail_action::save_attachment(dir, &id, index, &output)?;
             emit(
-                &serde_json::json!({"saved":output,"original_filename":name,"bytes":bytes.len()}),
+                &serde_json::json!({"saved":output,"original_filename":name,"bytes":bytes}),
                 json,
             )?;
         }
         MailCommand::Send(args) => {
-            let _lock = sync::lock(dir)?;
-            let (cfg, pass) = online(dir)?;
-            let mail = OutgoingMail {
-                to: args.to,
-                cc: args.cc,
-                subject: args.subject,
-                body: read_body(&args.body_file)?,
-                attachments: args.attach,
-                in_reply_to: None,
-            };
-            emit(
-                &serde_json::json!({"message_id":provider::mail::send(&cfg,&pass,&mail)?}),
-                json,
-            )?;
+            let message_id = mail_action::send(dir, || {
+                Ok(OutgoingMail {
+                    to: args.to,
+                    cc: args.cc,
+                    subject: args.subject,
+                    body: read_body(&args.body_file)?,
+                    attachments: args.attach,
+                    in_reply_to: None,
+                })
+            })?;
+            emit(&serde_json::json!({"message_id":message_id}), json)?;
         }
         MailCommand::Reply {
             id,
@@ -599,33 +559,21 @@ fn mail_command(dir: &Path, cmd: MailCommand, json: bool) -> Result<()> {
             )?;
         }
         MailCommand::Forward { id, to, body_file } => {
-            let _lock = sync::lock(dir)?;
-            let item = get(dir, &id, Kind::Mail)?;
-            let (cfg, pass) = online(dir)?;
-            let introduction = body_file
-                .map(|p| read_body(&p))
-                .transpose()?
-                .unwrap_or_default();
-            emit(
-                &serde_json::json!({"message_id":provider::mail::forward(&cfg,&pass,&item,&to,&introduction)?}),
-                json,
-            )?;
+            let message_id = mail_action::forward(dir, &id, &to, || {
+                Ok(body_file
+                    .map(|p| read_body(&p))
+                    .transpose()?
+                    .unwrap_or_default())
+            })?;
+            emit(&serde_json::json!({"message_id":message_id}), json)?;
         }
         MailCommand::Flag { id, flag, clear } => {
-            let _lock = sync::lock(dir)?;
-            let mut item = get(dir, &id, Kind::Mail)?;
-            let (cfg, pass) = online(dir)?;
             let flag = match flag.as_str() {
                 "seen" => "\\Seen",
                 "flagged" => "\\Flagged",
                 _ => "\\Answered",
             };
-            provider::mail::flag(&cfg, &pass, &item, flag, !clear)?;
-            item.flags.retain(|f| f != flag);
-            if !clear {
-                item.flags.push(flag.into());
-            }
-            Store::open(dir)?.upsert(&item)?;
+            mail_action::flag(dir, &id, flag, !clear)?;
             emit(&serde_json::json!({"updated":id}), json)?;
         }
         MailCommand::Move {
@@ -633,20 +581,10 @@ fn mail_command(dir: &Path, cmd: MailCommand, json: bool) -> Result<()> {
             folder,
             dry_run,
         } => {
-            let _lock = sync::lock(dir)?;
-            let items = ids
-                .iter()
-                .map(|id| get(dir, id, Kind::Mail))
-                .collect::<Result<Vec<_>>>()?;
-            let (cfg, pass) = online(dir)?;
-            let plan = provider::mail::move_many(&cfg, &pass, &items, &folder, dry_run)?;
+            let plan = mail_action::move_mail(dir, &ids, &folder, dry_run)?;
             if dry_run {
                 emit(&plan, json)?;
             } else {
-                let mut store = Store::open(dir)?;
-                for id in &ids {
-                    store.remove(id)?;
-                }
                 if ids.len() == 1 {
                     emit(
                         &serde_json::json!({"moved":ids[0],"folder":folder,"next":"m2k sync --kind mail"}),
@@ -665,11 +603,7 @@ fn mail_command(dir: &Path, cmd: MailCommand, json: bool) -> Result<()> {
             }
         }
         MailCommand::Delete { id } => {
-            let _lock = sync::lock(dir)?;
-            let item = get(dir, &id, Kind::Mail)?;
-            let (cfg, pass) = online(dir)?;
-            provider::mail::delete(&cfg, &pass, &item)?;
-            Store::open(dir)?.remove(&id)?;
+            mail_action::delete(dir, &id)?;
             emit(&serde_json::json!({"deleted":id}), json)?;
         }
     }
