@@ -567,3 +567,230 @@ fn branch_refresh_probes_the_branch_and_unlisted_people_and_keeps_the_rest_cache
         "merge was persisted"
     );
 }
+
+fn shared_json(dir: &TempDir, args: &[&str]) -> Value {
+    serde_json::from_slice(&run(dir, args).success().get_output().stdout).unwrap()
+}
+
+fn emails_of(result: &Value) -> Vec<&str> {
+    result["colleagues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|colleague| colleague["email"].as_str().unwrap())
+        .collect()
+}
+
+fn cached_colleague(email: &str) -> Value {
+    serde_json::json!({
+        "email": email,
+        "name": null,
+        "checked_at": "2026-01-01T00:00:00Z",
+        "calendars": [{
+            "url": format!("http://x/{email}/default/"),
+            "display_name": null,
+            "writable": true
+        }]
+    })
+}
+
+fn write_cache(dir: &TempDir, colleagues: &[Value]) {
+    std::fs::write(
+        dir.path().join("shared_calendars.json"),
+        serde_json::to_vec(&serde_json::json!({"account": ME, "colleagues": colleagues})).unwrap(),
+    )
+    .unwrap();
+}
+
+fn seed_directory(dir: &TempDir, members: &[(&str, &str)]) {
+    let collection = |path: &str| Collection {
+        kind: Kind::Contacts,
+        id: format!("book/{path}/"),
+        name: format!("{}(/{path})", path.rsplit('/').next().unwrap()),
+    };
+    let mut store = Store::open(dir.path()).unwrap();
+    store
+        .ensure_account(&config::load(dir.path()).unwrap())
+        .unwrap();
+    store
+        .upsert_snapshot(
+            &Snapshot {
+                kind: Kind::Contacts,
+                collections: ["CO", "CO/BU", "CO/BU/TEAM", "CO/OTHER"]
+                    .into_iter()
+                    .map(collection)
+                    .collect(),
+                items: members
+                    .iter()
+                    .map(|(email, path)| Item {
+                        collection: format!("book/{path}/"),
+                        ..contact(email, "")
+                    })
+                    .collect(),
+            },
+            chrono::Utc::now(),
+        )
+        .unwrap();
+}
+
+#[test]
+fn refresh_keeps_cached_colleague_when_the_probe_fails() {
+    // 500 只是這次沒查到，不是對方停止分享。空的 home 仍要移除。
+    let server = DavServer::start();
+    let dir = setup(&server);
+    let dropped = filler(0);
+    write_cache(
+        &dir,
+        &[
+            cached_colleague(BROKEN),
+            cached_colleague(SHARED),
+            cached_colleague(&dropped),
+        ],
+    );
+
+    let refreshed = shared_json(&dir, &["meeting", "shared", "--refresh"]);
+
+    assert_eq!(emails_of(&refreshed), [BROKEN, SHARED]);
+    let colleagues = refreshed["colleagues"].as_array().unwrap();
+    let broken = colleagues
+        .iter()
+        .find(|colleague| colleague["email"] == BROKEN)
+        .unwrap();
+    assert_eq!(broken["checked_at"], "2026-01-01T00:00:00Z");
+    let shared_at = colleagues
+        .iter()
+        .find(|colleague| colleague["email"] == SHARED)
+        .unwrap()["checked_at"]
+        .as_str()
+        .unwrap();
+    assert_ne!(shared_at, "2026-01-01T00:00:00Z");
+    assert!(refreshed["warnings"][0]
+        .as_str()
+        .unwrap()
+        .starts_with(BROKEN));
+
+    let cached = shared(&dir);
+    assert_eq!(cached["from_cache"], true);
+    assert_eq!(emails_of(&cached), [BROKEN, SHARED]);
+}
+
+#[test]
+fn branch_refresh_keeps_cached_colleague_when_the_probe_fails() {
+    let server = DavServer::start();
+    let dir = setup(&server);
+    let outside = filler(1);
+    seed_directory(
+        &dir,
+        &[(BROKEN, "CO/BU/TEAM"), (outside.as_str(), "CO/OTHER")],
+    );
+    write_cache(
+        &dir,
+        &[cached_colleague(BROKEN), cached_colleague(&outside)],
+    );
+
+    let refreshed = shared_json(
+        &dir,
+        &["meeting", "shared", "--refresh", "--branch", "/CO/BU"],
+    );
+
+    assert_eq!(refreshed["branch"], "CO/BU");
+    assert!(probed(&server, BROKEN), "in-scope colleague was not probed");
+    assert!(!probed(&server, &outside), "outside colleague was probed");
+    let emails = emails_of(&refreshed);
+    assert!(emails.contains(&BROKEN), "{emails:?}");
+    assert!(emails.contains(&outside.as_str()), "{emails:?}");
+    let broken = refreshed["colleagues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|colleague| colleague["email"] == BROKEN)
+        .unwrap();
+    assert_eq!(broken["checked_at"], "2026-01-01T00:00:00Z");
+
+    let cached = shared(&dir);
+    assert_eq!(cached["from_cache"], true);
+    assert!(emails_of(&cached).contains(&BROKEN));
+    assert!(emails_of(&cached).contains(&outside.as_str()));
+}
+
+#[test]
+fn branch_without_refresh_scans_when_a_cache_exists_and_stays_complete() {
+    let server = DavServer::start();
+    let dir = setup(&server);
+    let inside = filler(0);
+    seed_directory(
+        &dir,
+        &[(SHARED, "CO/OTHER"), (inside.as_str(), "CO/BU/TEAM")],
+    );
+    shared(&dir);
+    let after_full = server.requested().len();
+
+    let branched = shared_json(&dir, &["meeting", "shared", "--branch", "/CO/BU"]);
+
+    let requests = server.requested();
+    let new = &requests[after_full..];
+    assert!(
+        new.iter()
+            .any(|request| request == &format!("1 {CALENDARS}/{inside}/")),
+        "branch was ignored: {new:?}"
+    );
+    assert!(
+        !new.iter()
+            .any(|request| request.contains(&format!("{CALENDARS}/{SHARED}/"))),
+        "outside colleague was probed: {new:?}"
+    );
+    assert_eq!(branched["from_cache"], false);
+    assert_eq!(branched["branch"], "CO/BU");
+    assert!(emails_of(&branched).contains(&SHARED), "{branched}");
+
+    let after_branch = requests.len();
+    let again = shared(&dir);
+    assert_eq!(
+        server.requested().len(),
+        after_branch,
+        "merged cache was not reused"
+    );
+    assert_eq!(again["from_cache"], true);
+    assert!(again["branch"].is_null());
+    assert!(emails_of(&again).contains(&SHARED));
+}
+
+#[test]
+fn branch_scan_without_a_complete_cache_is_not_the_default_list() {
+    let server = DavServer::start();
+    let dir = setup(&server);
+    let inside = filler(0);
+    seed_directory(
+        &dir,
+        &[(SHARED, "CO/OTHER"), (inside.as_str(), "CO/BU/TEAM")],
+    );
+
+    let branched = shared_json(
+        &dir,
+        &["meeting", "shared", "--refresh", "--branch", "/CO/BU"],
+    );
+
+    assert_eq!(branched["branch"], "CO/BU");
+    assert_eq!(branched["from_cache"], false);
+    assert!(
+        !emails_of(&branched).contains(&SHARED),
+        "colleague outside the branch was treated as scanned: {branched}"
+    );
+    let cache: Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("shared_calendars.json")).unwrap())
+            .unwrap();
+    assert_eq!(cache["complete"], false);
+
+    let after = server.requested().len();
+    let again = shared(&dir);
+    assert!(
+        server.requested().len() > after,
+        "partial cache answered the unscoped query"
+    );
+    assert_eq!(again["from_cache"], false);
+    assert!(again["branch"].is_null());
+    assert!(
+        emails_of(&again).contains(&SHARED),
+        "default list lost the colleague outside the last branch: {again}"
+    );
+}

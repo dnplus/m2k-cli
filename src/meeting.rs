@@ -918,22 +918,32 @@ const SHARED_CACHE_FILE: &str = "shared_calendars.json";
 #[derive(Serialize, Deserialize)]
 struct SharedCache {
     account: String,
+    /// `false` 表示這份快取只來自尚未與完整結果合併的 `--branch` 掃描，不能當成全公司名單。
+    /// 舊檔沒有這個欄位，視為完整。
+    #[serde(default = "shared_cache_is_complete_by_default")]
+    complete: bool,
     colleagues: Vec<SharedColleague>,
 }
 
-fn read_shared_cache(data_dir: &Path, account: &str) -> Option<Vec<SharedColleague>> {
+fn shared_cache_is_complete_by_default() -> bool {
+    true
+}
+
+fn read_shared_cache(data_dir: &Path, account: &str) -> Option<SharedCache> {
     let bytes = fs::read(data_dir.join(SHARED_CACHE_FILE)).ok()?;
     let cache = serde_json::from_slice::<SharedCache>(&bytes).ok()?;
-    (cache.account == account).then_some(cache.colleagues)
+    (cache.account == account).then_some(cache)
 }
 
 fn write_shared_cache(
     data_dir: &Path,
     account: &str,
     colleagues: &[SharedColleague],
+    complete: bool,
 ) -> Result<()> {
     let cache = SharedCache {
         account: account.to_owned(),
+        complete,
         colleagues: colleagues.to_vec(),
     };
     crate::local_state::write_atomic(
@@ -984,19 +994,36 @@ impl BranchScope {
     }
 }
 
+/// 分支外的人這次沒查；探測失敗也不代表對方停止分享。兩種都沿用上次成功的快取。
+/// 空的行事曆 home 是「沒分享」，不沿用。
+fn merge_previous_colleagues(
+    colleagues: &mut Vec<SharedColleague>,
+    previous: Vec<SharedColleague>,
+    scope: Option<&BranchScope>,
+    failed: &BTreeSet<String>,
+) {
+    colleagues.extend(previous.into_iter().filter(|colleague| {
+        let outside = scope.is_some_and(|scope| !scope.includes(&colleague.email));
+        outside || failed.contains(&colleague.email)
+    }));
+    colleagues.sort_by(|left, right| left.email.cmp(&right.email));
+}
+
 fn execute_shared(data_dir: &Path, args: SharedArgs, json: bool) -> Result<()> {
     let (config, password) = required_online_or_demo(data_dir)?;
     let account = config.email.trim().to_lowercase();
     let cached = read_shared_cache(data_dir, &account);
-    let output = match (cached, args.refresh) {
-        (Some(colleagues), false) => SharedCalendars {
+    let output = match (args.branch.is_none() && !args.refresh, cached) {
+        (true, Some(cache)) if cache.complete => SharedCalendars {
             scanned: 0,
             from_cache: true,
             branch: None,
-            colleagues,
+            colleagues: cache.colleagues,
             warnings: Vec::new(),
         },
-        (cached, _) => {
+        (_, cached) => {
+            let previous_complete = cached.as_ref().is_some_and(|cache| cache.complete);
+            let previous = cached.map(|cache| cache.colleagues).unwrap_or_default();
             let store = Store::open(data_dir)?;
             match new_dav_session(&config, password.as_deref())? {
                 Some(session) => {
@@ -1009,18 +1036,17 @@ fn execute_shared(data_dir: &Path, args: SharedArgs, json: bool) -> Result<()> {
                         eprintln!("正在檢查同事分享的行事曆，可能需要數十秒…");
                     }
                     let names = contact_names(&store)?;
-                    let mut output = collect_shared(&config, &session, &names, scope.as_ref())?;
-                    if let Some(scope) = &scope {
-                        let kept = cached
-                            .unwrap_or_default()
-                            .into_iter()
-                            .filter(|colleague| !scope.includes(&colleague.email));
-                        output.colleagues.extend(kept);
-                        output
-                            .colleagues
-                            .sort_by(|left, right| left.email.cmp(&right.email));
-                    }
-                    write_shared_cache(data_dir, &account, &output.colleagues)?;
+                    let (mut output, failed) =
+                        collect_shared(&config, &session, &names, scope.as_ref())?;
+                    merge_previous_colleagues(
+                        &mut output.colleagues,
+                        previous,
+                        scope.as_ref(),
+                        &failed,
+                    );
+                    // 沒有完整快取可併的分支掃描只涵蓋該分支與不在通訊錄的人。
+                    let complete = scope.is_none() || previous_complete;
+                    write_shared_cache(data_dir, &account, &output.colleagues, complete)?;
                     output
                 }
                 None => SharedCalendars {
@@ -1071,7 +1097,7 @@ fn collect_shared(
     session: &provider::dav::DavSession<'_>,
     names: &BTreeMap<String, String>,
     scope: Option<&BranchScope>,
-) -> Result<SharedCalendars> {
+) -> Result<(SharedCalendars, BTreeSet<String>)> {
     let profile = SiteProfile::for_config(Some(config))?;
     let origin = origin(config);
     let principal = format!(
@@ -1114,6 +1140,7 @@ fn collect_shared(
     let checked_at = Utc::now();
     let mut colleagues = Vec::new();
     let mut warnings = Vec::new();
+    let mut failed = BTreeSet::new();
     for (email, found) in results.into_inner().expect("shared scan results lock") {
         match found {
             Ok(calendars) if calendars.is_empty() => {}
@@ -1126,18 +1153,24 @@ fn collect_shared(
                     checked_at,
                 });
             }
-            Err(error) => warnings.push(format!("{email}：{error:#}")),
+            Err(error) => {
+                warnings.push(format!("{email}：{error:#}"));
+                failed.insert(email);
+            }
         }
     }
     colleagues.sort_by(|left, right| left.email.cmp(&right.email));
     warnings.sort();
-    Ok(SharedCalendars {
-        scanned: candidates.len(),
-        from_cache: false,
-        branch: scope.map(|scope| scope.path.clone()),
-        colleagues,
-        warnings,
-    })
+    Ok((
+        SharedCalendars {
+            scanned: candidates.len(),
+            from_cache: false,
+            branch: scope.map(|scope| scope.path.clone()),
+            colleagues,
+            warnings,
+        },
+        failed,
+    ))
 }
 
 fn shared_text(output: &SharedCalendars) -> String {
