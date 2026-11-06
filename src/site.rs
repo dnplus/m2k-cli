@@ -283,6 +283,13 @@ impl SiteProfile {
         )
     }
 
+    /// Sibling of the calendars path that holds CalDAV principals.
+    pub fn caldav_principals_url(&self, origin: &str) -> String {
+        let calendars = self.caldav_calendars_path.trim_end_matches('/');
+        let parent = calendars.rsplit_once('/').map_or("", |(parent, _)| parent);
+        format!("{origin}{parent}/principals")
+    }
+
     pub fn carddav_principal_url(&self, origin: &str, email: &str) -> String {
         format!(
             "{origin}{}",

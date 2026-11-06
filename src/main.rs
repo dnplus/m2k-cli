@@ -21,7 +21,26 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// 讀取端提早關閉 stdout（如 `| head`）時，`println!` 會 panic；比照 Unix 工具以 SIGPIPE 慣例的 141 安靜結束。
+/// 不把 SIGPIPE 改回預設：那會讓 IMAP／SMTP socket 與 `security` 子程序的管線錯誤直接砍掉程序，而不是回報錯誤。
+fn exit_quietly_when_stdout_closes() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        if message.starts_with("failed printing to stdout") && message.contains("Broken pipe") {
+            std::process::exit(141);
+        }
+        default(info);
+    }));
+}
+
 fn main() {
+    exit_quietly_when_stdout_closes();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error)

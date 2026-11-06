@@ -8,9 +8,11 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// Mail2000 的 vCard 只有 FN／N／NICKNAME／EMAIL／TEL／ORG，沒有主管或匯報欄位，因此不畫匯報線也不推估。
+/// Mail2000 的 vCard 只有 FN／N／NICKNAME／EMAIL／TEL／ORG，沒有主管欄位；主管是依部門結構推斷的。
 pub const REPORTING_NOTE: &str =
-    "通訊錄 vCard 沒有主管或匯報欄位；本圖只呈現部門歸屬，不含匯報線，也不推估主管。";
+    "通訊錄 vCard 沒有主管欄位，主管依部門結構推斷：上層主管會列在每個下層部門，\
+     故本層成員中出現在所有子部門者為主管（direct）；本層沒有自己的主管時由上層主管兼任（acting）。\
+     最底層部門與多位候選的部門無法判斷，不標示主管。";
 
 #[derive(Args, Debug)]
 pub struct ChartArgs {
@@ -52,9 +54,29 @@ pub struct OrgChart {
 pub struct Department {
     pub name: String,
     pub path: String,
+    /// 推斷的部門主管；無法判斷時省略。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manager: Option<Manager>,
     /// 直屬此部門的成員，依姓名排序。
     pub members: Vec<Member>,
     pub children: Vec<Department>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Manager {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    pub basis: ManagerBasis,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagerBasis {
+    /// 本層成員，且列在每個子部門。
+    Direct,
+    /// 本層沒有自己的主管，由最近的上層主管兼任。
+    Acting,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -179,14 +201,19 @@ pub fn build(
             }
         })
         .transpose()?;
-    if let Some(node) = branch {
-        roots = vec![node];
-    }
-
-    let departments = roots
+    // 主管要在完整樹上推斷：只看分支時，分支外的上層主管會被誤認成本層主管。
+    let mut departments = roots
         .into_iter()
         .map(|node| department(node, &children, &members))
         .collect::<Vec<_>>();
+    for department in &mut departments {
+        assign_managers(department, &BTreeSet::new(), None);
+    }
+    if let Some(node) = branch {
+        departments = find_department(departments, &node.path)
+            .into_iter()
+            .collect();
+    }
     let mut department_count = 0;
     let mut ids = BTreeSet::new();
     let mut stack = departments.iter().collect::<Vec<_>>();
@@ -226,6 +253,7 @@ fn department(
     Department {
         name: node.name.clone(),
         path: node.path.clone(),
+        manager: None,
         members: members.get(node.path.as_str()).cloned().unwrap_or_default(),
         children: children
             .get(node.path.as_str())
@@ -236,6 +264,64 @@ fn department(
     }
 }
 
+/// Mail2000 把上層主管列進每個下層部門。因此：
+/// - 本層成員中，不是上層主管、卻列在每個子部門的人，就是本層主管（direct）；本層其他人是秘書或系統帳號。
+/// - 有子部門卻沒有候選，或本層除了上層主管外沒有別人，由最近的上層主管兼任（acting）。
+/// - 最底層部門的主管與成員在結構上無從區分，多位候選也無法判斷，兩者都不標示。
+fn assign_managers(
+    department: &mut Department,
+    inherited: &BTreeSet<String>,
+    acting: Option<&Manager>,
+) {
+    let candidates = if department.children.is_empty() {
+        Vec::new()
+    } else {
+        department
+            .members
+            .iter()
+            .filter(|member| {
+                !inherited.contains(&member.id)
+                    && department
+                        .children
+                        .iter()
+                        .all(|child| child.members.iter().any(|other| other.id == member.id))
+            })
+            .collect::<Vec<_>>()
+    };
+    let only_inherited = department
+        .members
+        .iter()
+        .all(|member| inherited.contains(&member.id));
+    department.manager = match candidates.as_slice() {
+        [head] => Some(Manager {
+            name: head.name.clone(),
+            username: head.username.clone(),
+            basis: ManagerBasis::Direct,
+        }),
+        [] if !department.children.is_empty() || only_inherited => acting.map(|manager| Manager {
+            basis: ManagerBasis::Acting,
+            ..manager.clone()
+        }),
+        _ => None,
+    };
+    let mut inherited = inherited.clone();
+    inherited.extend(candidates.iter().map(|member| member.id.clone()));
+    let manager = department.manager.clone();
+    for child in &mut department.children {
+        assign_managers(child, &inherited, manager.as_ref());
+    }
+}
+
+fn find_department(departments: Vec<Department>, path: &str) -> Option<Department> {
+    departments.into_iter().find_map(|department| {
+        if department.path == path {
+            Some(department)
+        } else {
+            find_department(department.children, path)
+        }
+    })
+}
+
 /// 給代理程式讀的縮排 Markdown：部門以粗體標示，成員列在所屬部門下。
 pub fn render_markdown(chart: &OrgChart) -> String {
     let mut out = String::from("# 部門組織圖\n\n");
@@ -244,7 +330,7 @@ pub fn render_markdown(chart: &OrgChart) -> String {
         None => out.push_str("- 範圍：全部已快取分支\n"),
     }
     out.push_str(&format!(
-        "- 部門 {} 個，成員 {} 位（同一人可屬多個部門）\n- 匯報線：{}\n",
+        "- 部門 {} 個，成員 {} 位（同一人可屬多個部門）\n- 主管：{}\n",
         chart.department_count, chart.member_count, chart.reporting_note
     ));
     if let Some(domain) = &chart.email_domain {
@@ -269,8 +355,22 @@ fn markdown_department(
     level: usize,
 ) {
     let indent = "  ".repeat(level);
+    let manager = department
+        .manager
+        .as_ref()
+        .map(|manager| {
+            let mut label = format!(" · 主管：{}", manager.name);
+            if let Some(username) = &manager.username {
+                label.push_str(&format!("（{username}）"));
+            }
+            if manager.basis == ManagerBasis::Acting {
+                label.push_str("（兼任）");
+            }
+            label
+        })
+        .unwrap_or_default();
     out.push_str(&format!(
-        "{indent}- **{}** `{}`（{} 人）\n",
+        "{indent}- **{}** `{}`（{} 人）{manager}\n",
         department.name,
         department.path,
         department.members.len()
