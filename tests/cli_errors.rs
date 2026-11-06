@@ -145,3 +145,24 @@ fn calendar_and_contacts_writes_check_lock_and_account_before_reading_the_file()
         drop(lock);
     }
 }
+
+#[test]
+fn closed_stdout_exits_quietly_instead_of_panicking() {
+    // `m2k ... | head` 是常見用法；讀取端提早關閉時，panic 訊息會混進使用者的終端與代理程式的錯誤輸出。
+    let dir = tempfile::TempDir::new().unwrap();
+    demo::seed(dir.path()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_m2k"))
+        .arg("--data-dir")
+        .arg(dir.path())
+        .args(["directory", "chart"])
+        .env("M2K_KEYCHAIN", NO_KEYCHAIN)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let output = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert_eq!(output.status.code(), Some(141), "{stderr}");
+}

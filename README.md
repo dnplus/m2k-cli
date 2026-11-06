@@ -260,7 +260,8 @@ m2k directory chart --format mermaid
 - `--json` 輸出巢狀部門結構，保留完整的 `emails` 與 `username`。`--format mermaid` 只畫部門與直屬人數。
 - 最上層通訊錄是全公司名單，只列沒有部門歸屬的人。兼任多個部門的人在各部門都會列出，總人數只算一次。
 - `--branch` 只輸出指定分支及其子部門，可填 path（前導 `/` 可省略）、名稱或 URL。
-- Mail2000 的 vCard 沒有主管或匯報欄位，所以組織圖只呈現部門歸屬，不畫匯報線，也不推估主管。輸出內會註明這一點。
+- Mail2000 的 vCard 沒有主管欄位，但上層主管會列在每個下層部門，所以主管依結構推斷。本層成員中不是上層主管、卻列在所有子部門的人標為主管（JSON `manager.basis` 為 `direct`）。本層沒有自己的主管時，標成上層主管兼任（`acting`，Markdown 顯示「（兼任）」）。
+- 最底層部門的主管與成員在結構上無從區分，與有多位候選的部門一樣不標示。`--branch` 仍以完整部門樹推斷，不會把分支外的上層主管誤標成本層主管。
 
 ### 共用通訊錄快取
 
@@ -287,6 +288,8 @@ M2K_DIRECTORY_CACHE=/shared/m2k-dir.json m2k directory resolve '王小明'
 ```sh
 m2k date-range 明天
 m2k meeting resources --site 北區 --capacity 8
+m2k meeting shared
+m2k meeting shared --refresh --branch 事業處
 m2k meeting events --attendee colleague@example.com \
   --start 2026-10-07T09:30:00+08:00 --end 2026-10-07T17:30:00+08:00
 m2k meeting free-busy --attendee colleague@example.com \
@@ -309,6 +312,8 @@ m2k meeting rsvp MAIL_ID --response decline --comment '那天出差'
 ```
 
 房間資源結合 DAV 回覆與 site profile 的據點與會議室清單。空檔判定使用有時區的時間範圍；權限不足、事件無法解析或重複事件無法可靠展開時，結果是未知，不能視為空閒。預約前 live recheck 房間衝突，個人衝突回報警告。
+
+`meeting shared` 列出哪些同事已把行事曆分享給你，只有這些人查得到 free/busy、共同空檔與行程。Mail2000 的委派清單包含全公司，不代表對方有分享，所以 m2k 讀自己的委派清單後，逐一 PROPFIND 每位同事的行事曆 home（12 路並行，數百人約數秒到數十秒），只留下真的有可讀行事曆的人；自己、`@system` 與會議室網域不算同事。輸出每人一筆：`email`、`name`（本機通訊錄快取 vCard `N` 的全名，未同步則為 null）、`calendars`（`url`、`display_name`、`writable`），依 email 排序，另有 `scanned`（檢查的委派對象數）與 `warnings`；單一同事查詢失敗只列入 `warnings`，不中斷整個指令。文字輸出開頭是「N 位同事分享行事曆給你（可查 free/busy）」。`free-busy`／`slots`／`book` 查到沒分享的同事（404）時狀態維持 `unknown`，理由會說明對方尚未分享並指向 `meeting shared`，絕不當成空檔。展示資料沒有伺服器可查，回傳空清單與一則警告。結果存在資料目錄的 `shared_calendars.json`：分享很少變動，快取不設過期，之後直接讀快取（`from_cache` 為 true，每人附 `checked_at`），`--refresh` 才重新檢查；換帳號不沿用。`--refresh --branch PATH` 只檢查該部門分支（含子部門）加上不在通訊錄快取的委派對象（通訊錄常缺新進同事），結果併入快取，分支外的人沿用舊結果；平常只約自己 BU 時可快數倍。
 
 個人與房間的兩次 DAV PUT 無法形成跨伺服器交易，因此會回報逐一成功、失敗及補救資訊。預約行事曆與寄送邀請是兩個明確動作；SMTP 使用 `text/calendar; method=REQUEST`。收到的邀請用 `meeting rsvp MAIL_ID --response accept|decline|tentative` 回覆：從郵件的 `text/calendar`（`METHOD:REQUEST`，ICS 沒寫時看 Content-Type 的 `method=`）產生 RFC 5546 `METHOD:REPLY`，保留原 UID、SEQUENCE、ORGANIZER 與 RECURRENCE-ID，ATTENDEE 只放自己並帶 PARTSTAT，以 `text/calendar; method=REPLY` 寄給主辦人。`--dry-run` 只輸出 ICS 與收件者；自己不在 ATTENDEE、自己是主辦人、或 METHOD 不是 REQUEST 時明確報錯且不寄。寄信不自動重試；展示資料拒絕實際寄送。RSVP 不修改自己行事曆裡的 PARTSTAT（輸出 `calendar_updated: false`），需要時另用 `calendar update`。
 
@@ -439,6 +444,7 @@ m2k skills install --path ~/.cursor/skills
 | 全公司／部門／分支目錄、自己身份、組織圖 | `directory sync/tree/search/resolve/self/chart` |
 | 多個資料目錄共用通訊錄快取 | `directory export`、`M2K_DIRECTORY_CACHE` |
 | 個人與同事行事曆、日期範圍 | `calendar`、`meeting events`、`date-range` |
+| 哪些同事分享了行事曆 | `meeting shared` |
 | 衝突、共同空檔、方案檢查 | `meeting free-busy/slots/review` |
 | 房間候選與預約 | `meeting resources/rooms/book` |
 | 邀請草稿與寄送 | `meeting prepare/invite` |
