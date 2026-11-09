@@ -46,7 +46,8 @@ pub struct CancelArgs {
 
 #[derive(Debug, Serialize)]
 pub struct CancelOutput {
-    /// dry-run、complete、partial、incomplete（有行事曆查不到，未刪除任何副本）或 not_found。
+    /// dry-run、complete、partial、incomplete（有行事曆查不到，未刪除任何副本）、
+    /// not_found 或 notify_failed（副本已全部刪除，但取消通知沒寄出）。
     pub state: String,
     pub uid: String,
     pub dry_run: bool,
@@ -57,6 +58,7 @@ pub struct CancelOutput {
     pub notify_recipients: Vec<String>,
     pub notified: bool,
     pub message_id: Option<String>,
+    pub notify_error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -94,6 +96,11 @@ impl fmt::Display for CancelIncomplete {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0.state.as_str() {
             "not_found" => write!(f, "所有已檢查的行事曆都找不到 UID {}", self.0.uid),
+            "notify_failed" => write!(
+                f,
+                "所有副本已刪除，但取消通知寄送失敗；請改用其他方式通知與會者：{}",
+                self.0.notify_error.as_deref().unwrap_or_default()
+            ),
             "incomplete" => write!(
                 f,
                 "{} 個行事曆查詢失敗，為避免只刪一半，未刪除任何副本；請排除錯誤或用 --room／--url 指定會議室後再執行",
@@ -137,7 +144,7 @@ pub fn execute(data_dir: &Path, args: CancelArgs, json: bool) -> Result<()> {
     }
     if matches!(
         output.state.as_str(),
-        "not_found" | "partial" | "incomplete"
+        "not_found" | "partial" | "incomplete" | "notify_failed"
     ) {
         return Err(CancelIncomplete(output).into());
     }
@@ -277,9 +284,23 @@ pub fn cancel(data_dir: &Path, args: CancelArgs) -> Result<CancelOutput> {
         Vec::new()
     };
 
+    // 刪除前先產生取消通知，ICS 有問題就在刪除前失敗，不會刪完才發現寄不出去。
+    let cancel_ics = if notify_recipients.is_empty() {
+        None
+    } else {
+        let raw = found
+            .iter()
+            .find(|(target, _)| target.calendar_url == self_target.calendar_url)
+            .or_else(|| found.first())
+            .map(|(_, item)| item.raw.as_str())
+            .unwrap_or_default();
+        Some(build_cancel_ics(raw, &config.email, &notify_recipients)?)
+    };
+
     // 有行事曆查不到時一份都不刪：留下自己那份（含 LOCATION）才找得回會議室副本。
     let lookup_complete = lookup_errors.is_empty();
     let mut copies = Vec::new();
+    let mut auth_stopped = false;
     for (target, item) in &found {
         let mut copy = CancelCopy {
             target: target.label.clone(),
@@ -290,8 +311,11 @@ pub fn cancel(data_dir: &Path, args: CancelArgs) -> Result<CancelOutput> {
             error: None,
             cache_error: None,
         };
-        if !args.dry_run && !lookup_complete {
+        if !lookup_complete {
             copy.result = "skipped".to_owned();
+        } else if auth_stopped {
+            copy.result = "skipped".to_owned();
+            copy.error = Some("前一筆刪除遭拒絕認證，已停止；請執行 m2k auth login".to_owned());
         } else if !args.dry_run {
             match session.delete_resource(Kind::Calendar, &item.remote_id, item.etag.as_deref()) {
                 Ok(outcome) => {
@@ -313,6 +337,8 @@ pub fn cancel(data_dir: &Path, args: CancelArgs) -> Result<CancelOutput> {
                     }
                 }
                 Err(error) => {
+                    // 認證遭拒時不再對其他副本重試，避免鎖帳號。
+                    auth_stopped = crate::error::is_auth_failed(&error);
                     copy.result = "error".to_owned();
                     copy.error = Some(format!("{error:#}"));
                 }
@@ -324,12 +350,13 @@ pub fn cancel(data_dir: &Path, args: CancelArgs) -> Result<CancelOutput> {
     let all_removed = copies
         .iter()
         .all(|copy| matches!(copy.result.as_str(), "deleted" | "not_found"));
-    let state = if args.dry_run {
-        "dry-run"
-    } else if !lookup_complete {
+    // dry-run 也照實反映查不完整或查無副本，非零結束，不讓自動化誤信清單完整。
+    let mut state = if !lookup_complete {
         "incomplete"
     } else if found.is_empty() {
         "not_found"
+    } else if args.dry_run {
+        "dry-run"
     } else if all_removed {
         "complete"
     } else {
@@ -337,15 +364,16 @@ pub fn cancel(data_dir: &Path, args: CancelArgs) -> Result<CancelOutput> {
     };
 
     let mut message_id = None;
-    if state == "complete" && !notify_recipients.is_empty() {
-        let raw = found
-            .iter()
-            .find(|(target, _)| target.calendar_url == self_target.calendar_url)
-            .or_else(|| found.first())
-            .map(|(_, item)| item.raw.as_str())
-            .unwrap_or_default();
-        let ics = build_cancel_ics(raw, &config.email, &notify_recipients)?;
-        message_id = Some(provider::mail::send_cancel(&config, &password, &ics)?);
+    let mut notify_error = None;
+    if let (true, Some(ics)) = (state == "complete", cancel_ics.as_deref()) {
+        // 寄送失敗不能吞掉已刪除的逐筆結果；重跑也找不到副本，通知補不回來。
+        match provider::mail::send_cancel(&config, &password, ics) {
+            Ok(id) => message_id = Some(id),
+            Err(error) => {
+                state = "notify_failed";
+                notify_error = Some(format!("{error:#}"));
+            }
+        }
     }
 
     Ok(CancelOutput {
@@ -359,6 +387,7 @@ pub fn cancel(data_dir: &Path, args: CancelArgs) -> Result<CancelOutput> {
         notify_recipients,
         notified: message_id.is_some(),
         message_id,
+        notify_error,
     })
 }
 

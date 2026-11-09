@@ -504,8 +504,15 @@ impl<'a> DavSession<'a> {
             let raw = resource
                 .data
                 .ok_or_else(|| anyhow!("DAV 資源缺少 calendar-data"))?;
-            if !matches!(extract_uid(Kind::Calendar, &raw), Ok(Some(found)) if found == uid) {
-                continue;
+            match extract_uid(Kind::Calendar, &raw) {
+                Ok(Some(found)) if found == uid => {}
+                // 解析不了卻含這個 UID：不能當成不存在，否則會漏掉會議室副本。
+                Err(error) if raw.contains(uid) => {
+                    return Err(
+                        error.context(format!("無法解析含 UID {uid} 的資源：{}", resource.href))
+                    )
+                }
+                _ => continue,
             }
             let remote_url = resource_url(&collection_url, resource.href.as_str())?;
             items.push(

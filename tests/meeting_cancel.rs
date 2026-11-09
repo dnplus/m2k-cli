@@ -145,6 +145,20 @@ fn cancel_finds_and_deletes_every_copy_live_without_sending_mail() {
         events(&info, "dav.delete").is_empty(),
         "dry-run must not DELETE"
     );
+    // 打錯 UID 的 dry-run 回 not_found，不是看起來成功的空清單。
+    let typo = failed(
+        &data,
+        &info,
+        &[
+            "meeting",
+            "cancel",
+            "no-such-uid@m2k",
+            "--url",
+            room,
+            "--dry-run",
+        ],
+    );
+    assert_eq!(typo["error"]["code"], "not_found", "{typo}");
 
     let cancelled = ok(&data, &info, &["meeting", "cancel", &uid, "--url", room]);
     assert_eq!(cancelled["state"], "complete", "{cancelled}");
@@ -325,6 +339,9 @@ fn cancel_deletes_nothing_when_any_calendar_cannot_be_checked() {
 
     // 不指定會議室時掃所有會議室；fixture 沒有會議室清單 collection，discovery 失敗。
     // 只刪掉自己那份會讓會議室副本失聯，所以整筆不刪、非零結束。
+    // dry-run 也要照實非零結束，否則自動化會把不完整的清單當成全部。
+    let dry = failed(&data, &info, &["meeting", "cancel", &uid, "--dry-run"]);
+    assert_eq!(dry["state"], "incomplete", "{dry}");
     let incomplete = failed(&data, &info, &["meeting", "cancel", &uid]);
     assert_eq!(incomplete["state"], "incomplete", "{incomplete}");
     assert_eq!(incomplete["error"]["code"], "cancel_incomplete");
