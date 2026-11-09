@@ -318,7 +318,7 @@ pub fn run(dir: &Path, args: WatchArgs) -> Result<()> {
                 if stop.load(Ordering::Relaxed) {
                     break;
                 }
-                if args.once {
+                if args.once || crate::error::is_auth_failed(&error) {
                     let detail = crate::error::ErrorOutput::from_error(&error).error;
                     return Err(crate::error::Failure {
                         code: detail.code,

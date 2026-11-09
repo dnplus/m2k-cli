@@ -233,33 +233,42 @@ fn online(cfg: &Config, checks: &mut Vec<Check>) {
         }
         return;
     };
+    let mut rejected = false;
+    let mut attempt = |name: &'static str, run: &dyn Fn() -> Result<String>| {
+        if rejected {
+            return skip(name, "前一項登入遭拒絕；為免鎖住帳號，未再嘗試登入");
+        }
+        let result = run();
+        rejected = result.as_ref().is_err_and(crate::error::is_auth_failed);
+        check(name, result)
+    };
     let mut results = vec![
-        check(
-            "imap",
+        attempt("imap", &|| {
             provider::mail::verify_imap(cfg, &password)
-                .map(|()| format!("{}:{} 登入成功", cfg.imap_host, cfg.imap_port)),
-        ),
-        check(
-            "smtp",
+                .map(|()| format!("{}:{} 登入成功", cfg.imap_host, cfg.imap_port))
+        }),
+        attempt("smtp", &|| {
             provider::mail::verify_smtp(cfg, &password).map(|fallback| match fallback {
                 Some(port) => format!(
                     "{} 登入成功（587 不通，改用 {port}；建議 m2k config set --smtp-port {port}）",
                     cfg.smtp_host
                 ),
                 None => format!("{}:{} 登入成功", cfg.smtp_host, cfg.smtp_port),
-            }),
-        ),
+            })
+        }),
     ];
     for (name, kind, url) in [
         ("caldav", Kind::Calendar, &cfg.caldav_url),
         ("carddav", Kind::Contacts, &cfg.carddav_url),
     ] {
-        let mut result = dav(cfg, &password, kind, url);
-        if kind == Kind::Calendar {
-            result =
-                result.map(|detail| format!("{detail}；{}", calendar_sync_token(cfg, &password)));
-        }
-        results.push(check(name, result));
+        results.push(attempt(name, &|| {
+            let detail = dav(cfg, &password, kind, url)?;
+            Ok(if kind == Kind::Calendar {
+                format!("{detail}；{}", calendar_sync_token(cfg, &password))
+            } else {
+                detail
+            })
+        }));
     }
     for mut result in results {
         redact(&mut result, Some(&password));

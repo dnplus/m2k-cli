@@ -16,6 +16,20 @@ impl fmt::Display for Failure {
 
 impl std::error::Error for Failure {}
 
+pub const AUTH_FAILED: &str = "auth_failed";
+
+pub fn auth_failed(service: &str, detail: impl fmt::Display) -> Failure {
+    Failure {
+        code: AUTH_FAILED,
+        message: format!("{service} 帳號或密碼遭拒絕（{detail}）；請確認密碼後執行 m2k auth login"),
+        retryable: false,
+    }
+}
+
+pub fn is_auth_failed(error: &anyhow::Error) -> bool {
+    ErrorOutput::from_error(error).error.code == AUTH_FAILED
+}
+
 #[derive(Serialize)]
 pub struct ErrorOutput {
     pub state: &'static str,
@@ -25,9 +39,21 @@ pub struct ErrorOutput {
 #[derive(Debug)]
 pub struct PartialSync(pub Vec<crate::model::SyncResult>);
 
+impl PartialSync {
+    fn auth_failed(&self) -> bool {
+        self.0
+            .iter()
+            .any(|result| result.code.as_deref() == Some(AUTH_FAILED))
+    }
+}
+
 impl fmt::Display for PartialSync {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("部分同步失敗；已同步資料與失敗種類的原快取仍保留")
+        f.write_str("部分同步失敗；已同步資料與失敗種類的原快取仍保留")?;
+        if self.auth_failed() {
+            f.write_str("；帳號或密碼遭拒絕，請確認密碼後執行 m2k auth login")?;
+        }
+        Ok(())
     }
 }
 
@@ -61,8 +87,15 @@ impl ErrorOutput {
     }
 
     pub fn from_error(error: &anyhow::Error) -> Self {
-        let (code, retryable) = if error.downcast_ref::<PartialSync>().is_some() {
-            ("partial_sync", false)
+        let (code, retryable) = if let Some(partial) = error.downcast_ref::<PartialSync>() {
+            (
+                if partial.auth_failed() {
+                    AUTH_FAILED
+                } else {
+                    "partial_sync"
+                },
+                false,
+            )
         } else if error
             .downcast_ref::<crate::doctor::DoctorFailed>()
             .is_some()

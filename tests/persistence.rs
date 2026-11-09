@@ -452,6 +452,7 @@ fn unicode_case_insensitive_search_and_sync_status_survive_reopen() {
                 kind: Kind::Contacts,
                 count: 1,
                 error: None,
+                code: None,
             },
             Utc::now(),
         )
@@ -583,6 +584,7 @@ fn failed_sync_attempt_keeps_last_success_status() {
                 kind: Kind::Mail,
                 count: 4,
                 error: None,
+                code: None,
             },
             first,
         )
@@ -599,6 +601,7 @@ fn failed_sync_attempt_keeps_last_success_status() {
                 kind: Kind::Mail,
                 count: 0,
                 error: Some("連線失敗".to_owned()),
+                code: None,
             },
             second,
         )

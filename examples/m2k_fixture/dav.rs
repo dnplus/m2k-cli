@@ -59,6 +59,7 @@ pub fn serve(fixture: Arc<Fixture>, stream: TcpStream) -> Result<()> {
     } else if authorized(&fixture, &request) {
         route(&fixture, &request)
     } else {
+        fixture.record("dav.unauthorized", json!({"path": request.path}), None);
         let mut response = Response::new("401 Unauthorized");
         response
             .headers

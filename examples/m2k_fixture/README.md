@@ -26,7 +26,7 @@ SMTP 若使用 465／587 以外的 port，只有 loopback 主機允許，並一�
 
 每個 DAV HTTP 請求另外記在 `<data-dir>/http.jsonl`（method、path、depth、status、回應的 `<D:response>` 筆數、REPORT 種類），用來比對同步實際花了幾個請求。
 
-所有副作用都寫進 `<data-dir>/events.jsonl`，一行一個 JSON（`kind` 為 `smtp.message`、`dav.put`、`dav.delete`、`imap.store`、`imap.move`、`imap.copy`、`imap.expunge`、`imap.append`、`webhook`）；原始內容另存在 `smtp/`、`dav/`、`imap/`、`webhook/`，事件的 `file` 欄位指向它。端點資訊寫在 `<data-dir>/fixture.json`。
+所有副作用都寫進 `<data-dir>/events.jsonl`，一行一個 JSON（`kind` 為 `smtp.message`、`dav.put`、`dav.delete`、`imap.store`、`imap.move`、`imap.copy`、`imap.expunge`、`imap.append`、`imap.login_rejected`、`webhook`）；原始內容另存在 `smtp/`、`dav/`、`imap/`、`webhook/`，事件的 `file` 欄位指向它。端點資訊寫在 `<data-dir>/fixture.json`。
 
 `--data-dir` 必須是新目錄、空目錄，或之前 fixture 用過的目錄（有 `.m2k-fixture` 標記），否則拒絕啟動。
 
