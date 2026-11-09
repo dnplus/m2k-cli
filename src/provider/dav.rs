@@ -474,6 +474,65 @@ impl<'a> DavSession<'a> {
             .collect()
     }
 
+    /// 依 UID live 查詢 collection 內的事件副本（calendar-query UID prop-filter）。
+    /// 伺服器忽略 filter 時，仍只回傳 UID 完全相符的資源。
+    pub fn find_uid(&mut self, url: &str, uid: &str) -> Result<Vec<Item>> {
+        if uid.trim().is_empty() {
+            bail!("UID 不可為空白");
+        }
+        let collection = match self.known_collection(Kind::Calendar, url)? {
+            Some(collection) => collection,
+            None => {
+                self.discover(Kind::Calendar, url)?;
+                self.known_collection(Kind::Calendar, url)?
+                    .ok_or_else(|| anyhow!("指定的 DAV collection 未被 discovery 驗證：{url}"))?
+            }
+        };
+        let configured = configured_url(self.config, Kind::Calendar)?;
+        let collection_url = Url::parse(&collection.id)
+            .with_context(|| format!("DAV collection URL 格式錯誤：{}", collection.id))?;
+        let resources = report_uid(
+            &self.client,
+            self.config,
+            self.password,
+            &configured,
+            &collection_url,
+            uid,
+        )?;
+        let mut items = Vec::new();
+        for resource in resources {
+            let raw = resource
+                .data
+                .ok_or_else(|| anyhow!("DAV 資源缺少 calendar-data"))?;
+            if !matches!(extract_uid(Kind::Calendar, &raw), Ok(Some(found)) if found == uid) {
+                continue;
+            }
+            let remote_url = resource_url(&collection_url, resource.href.as_str())?;
+            items.push(
+                parse_resource(
+                    Kind::Calendar,
+                    canonical_collection_id(&collection_url),
+                    remote_url.to_string(),
+                    resource.etag,
+                    raw,
+                    None,
+                )?
+                .item,
+            );
+        }
+        Ok(items)
+    }
+
+    /// live 刪除一個同源資源，見 [`delete_resource`]。
+    pub fn delete_resource(
+        &self,
+        kind: Kind,
+        url: &str,
+        etag: Option<&str>,
+    ) -> Result<DeleteOutcome> {
+        delete_resource_with_client(&self.client, self.config, self.password, kind, url, etag)
+    }
+
     fn known_collection(&self, kind: Kind, url: &str) -> Result<Option<Collection>> {
         let configured = configured_url(self.config, kind)?;
         let resolved = resolve_endpoint(&configured, url)?;
@@ -1556,6 +1615,122 @@ pub fn delete(config: &Config, password: &str, item: &Item) -> Result<()> {
         "DAV DELETE",
     )?;
     Ok(())
+}
+
+/// live DELETE 的結果；404／410 與 412 不視為錯誤，交由呼叫端逐筆回報。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeleteOutcome {
+    Deleted,
+    NotFound,
+    PreconditionFailed,
+}
+
+/// 不經本機快取，直接 live DELETE 一個與設定同源的資源（例如會議室行事曆裡的副本）。
+/// `etag` 省略時先 live GET 取得 ETag；DELETE 一律帶 `If-Match`，不自動重試。
+pub fn delete_resource(
+    config: &Config,
+    password: &str,
+    kind: Kind,
+    url: &str,
+    etag: Option<&str>,
+) -> Result<DeleteOutcome> {
+    delete_resource_with_client(&build_client()?, config, password, kind, url, etag)
+}
+
+fn delete_resource_with_client(
+    client: &Client,
+    config: &Config,
+    password: &str,
+    kind: Kind,
+    url: &str,
+    etag: Option<&str>,
+) -> Result<DeleteOutcome> {
+    let configured = configured_url(config, kind)?;
+    let resource = resolve_endpoint(&configured, url)?;
+    if resource.path().ends_with('/') {
+        bail!("只能刪除單一資源，不接受 collection URL：{resource}");
+    }
+    let etag = match nonempty_etag(etag) {
+        Some(etag) => etag.to_owned(),
+        None => {
+            let (accept, marker) = match kind {
+                Kind::Calendar => ("text/calendar, text/plain", "BEGIN:VCALENDAR"),
+                Kind::Contacts => ("text/vcard, text/x-vcard, text/plain", "BEGIN:VCARD"),
+                Kind::Mail => bail!("Mail 不使用 DAV 協定"),
+            };
+            let request = checked_request(
+                client,
+                config,
+                password,
+                &configured,
+                Method::GET,
+                &resource,
+                DavOperation::Delete,
+            )?
+            .header(ACCEPT, accept);
+            let response = send(request)?;
+            if matches!(response.status(), StatusCode::NOT_FOUND | StatusCode::GONE) {
+                return Ok(DeleteOutcome::NotFound);
+            }
+            let (headers, body) =
+                require_status(response, &[StatusCode::OK], "DAV GET（取得 ETag）")?;
+            if !body.to_ascii_uppercase().contains(marker) {
+                bail!("{resource} 不是 {kind} 資源，未刪除");
+            }
+            header_etag(&headers)
+                .filter(|value| nonempty_etag(Some(value)).is_some())
+                .ok_or_else(|| anyhow!("伺服器未提供 ETag，拒絕無條件刪除：{resource}"))?
+        }
+    };
+    let request = checked_request(
+        client,
+        config,
+        password,
+        &configured,
+        Method::DELETE,
+        &resource,
+        DavOperation::Delete,
+    )?
+    .header(IF_MATCH, etag);
+    let response = send(request)?;
+    match response.status() {
+        StatusCode::OK | StatusCode::NO_CONTENT => Ok(DeleteOutcome::Deleted),
+        StatusCode::NOT_FOUND | StatusCode::GONE => Ok(DeleteOutcome::NotFound),
+        StatusCode::PRECONDITION_FAILED => Ok(DeleteOutcome::PreconditionFailed),
+        status => bail!("DAV DELETE 回應狀態錯誤：{status}"),
+    }
+}
+
+/// calendar-query 依 UID 精確比對（RFC 4791 §7.8.6）。
+fn report_uid(
+    client: &Client,
+    config: &Config,
+    password: &str,
+    configured: &Url,
+    collection: &Url,
+    uid: &str,
+) -> Result<Vec<DavResource>> {
+    let body = format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?><C:calendar-query xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\"><D:prop><D:getetag/><C:calendar-data/></D:prop><C:filter><C:comp-filter name=\"VCALENDAR\"><C:comp-filter name=\"VEVENT\"><C:prop-filter name=\"UID\"><C:text-match collation=\"i;octet\">{}</C:text-match></C:prop-filter></C:comp-filter></C:comp-filter></C:filter></C:calendar-query>",
+        xml_escape(uid)
+    );
+    let request = checked_request(
+        client,
+        config,
+        password,
+        configured,
+        Method::from_bytes(b"REPORT").expect("REPORT method"),
+        collection,
+        DavOperation::Report,
+    )?
+    .header("Depth", "1")
+    .header(CONTENT_TYPE, "application/xml; charset=utf-8")
+    .header(ACCEPT, "application/xml, text/xml")
+    .body(body);
+    let response = send(request)?;
+    let (_, body) = require_status(response, &[StatusCode::MULTI_STATUS], "DAV REPORT（UID）")?;
+    parse_multistatus(&body, configured, collection, Kind::Calendar, true)
 }
 
 fn build_client() -> Result<Client> {

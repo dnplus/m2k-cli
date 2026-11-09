@@ -682,8 +682,19 @@ fn dav_command(dir: &Path, kind: Kind, cmd: DavCommand, json: bool) -> Result<()
             emit(&serde_json::json!({"saved":output}), json)?;
         }
         DavCommand::Delete { id } => {
-            dav_write::delete(dir, || get(dir, &id, kind))?;
-            emit(&serde_json::json!({"deleted":id}), json)?;
+            // 會議室等未同步 collection 的 href 不在本機：改走 live DELETE（先 live 取 ETag）。
+            let remote_href = kind == Kind::Calendar
+                && (id.starts_with("https://") || id.starts_with("http://"))
+                && get(dir, &id, kind).is_err_and(|error| {
+                    m2k::error::ErrorOutput::from_error(&error).error.code == "not_found"
+                });
+            if remote_href {
+                dav_write::delete_remote(dir, kind, &id)?;
+                emit(&serde_json::json!({"deleted":id, "live":true}), json)?;
+            } else {
+                dav_write::delete(dir, || get(dir, &id, kind))?;
+                emit(&serde_json::json!({"deleted":id}), json)?;
+            }
         }
     }
     Ok(())

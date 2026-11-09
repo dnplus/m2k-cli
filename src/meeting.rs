@@ -57,6 +57,8 @@ pub enum MeetingCommand {
     Invite(InviteArgs),
     #[command(about = "live 檢查並把會議寫入自己與指定會議室行事曆")]
     Book(BookArgs),
+    #[command(about = "live 依 UID 刪除自己與會議室行事曆裡的所有副本；預設不寄信")]
+    Cancel(crate::meeting_cancel::CancelArgs),
     #[command(about = "以 METHOD:REPLY 回覆郵件中的會議邀請（接受／拒絕／暫定）")]
     Rsvp(crate::meeting_rsvp::RsvpArgs),
 }
@@ -286,9 +288,9 @@ pub(crate) struct WorkingHours {
 }
 
 #[derive(Debug, Serialize)]
-struct ResourcesOutput {
-    resources: Vec<MeetingRoom>,
-    errors: Vec<String>,
+pub(crate) struct ResourcesOutput {
+    pub(crate) resources: Vec<MeetingRoom>,
+    pub(crate) errors: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -425,6 +427,7 @@ pub fn execute(data_dir: &Path, command: MeetingCommand, json: bool) -> Result<(
         MeetingCommand::Prepare(args) => execute_prepare(data_dir, args, json),
         MeetingCommand::Invite(args) => execute_invite(data_dir, args, json),
         MeetingCommand::Book(args) => execute_book(data_dir, args, json),
+        MeetingCommand::Cancel(args) => crate::meeting_cancel::execute(data_dir, args, json),
         MeetingCommand::Rsvp(args) => crate::meeting_rsvp::execute(data_dir, args, json),
     }
 }
@@ -2440,7 +2443,7 @@ pub(crate) fn builtin_rooms(config: &Config, profile: &SiteProfile) -> Vec<Meeti
         .collect()
 }
 
-fn collect_rooms(
+pub(crate) fn collect_rooms(
     config: Option<&Config>,
     password: Option<&str>,
     session: Option<&mut provider::dav::DavSession<'_>>,
@@ -2595,7 +2598,7 @@ fn merge_live_rooms(rooms: &mut Vec<MeetingRoom>, live: Vec<MeetingRoom>, profil
     }
 }
 
-fn catalog_for_names(
+pub(crate) fn catalog_for_names(
     config: Option<&Config>,
     password: Option<&str>,
     session: Option<&mut provider::dav::DavSession<'_>>,
@@ -2625,7 +2628,7 @@ fn catalog_for_names(
     Ok(result)
 }
 
-fn validate_calendar_url(config: &Config, value: &str) -> Result<String> {
+pub(crate) fn validate_calendar_url(config: &Config, value: &str) -> Result<String> {
     let target = Url::parse(value.trim()).map_err(|_| anyhow!("calendar URL 格式錯誤"))?;
     if !matches!(target.scheme(), "http" | "https") || target.host_str().is_none() {
         bail!("calendar URL 必須是 http(s) URL");

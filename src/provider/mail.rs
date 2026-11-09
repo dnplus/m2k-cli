@@ -1474,7 +1474,7 @@ fn unescape_ical_text(value: &str) -> String {
     output
 }
 
-fn invite_details(ics: &str) -> Result<(String, Vec<String>)> {
+fn invite_details(ics: &str, expected_method: &str) -> Result<(String, Vec<String>)> {
     if ics.trim().is_empty() {
         bail!("ICS 不可為空白");
     }
@@ -1485,8 +1485,8 @@ fn invite_details(ics: &str) -> Result<(String, Vec<String>)> {
         .context("ICS 格式錯誤")?;
     let method =
         ical_property(&calendar.properties, "METHOD").ok_or_else(|| anyhow!("ICS 缺少 METHOD"))?;
-    if !method.trim().eq_ignore_ascii_case("REQUEST") {
-        bail!("ICS METHOD 必須是 REQUEST");
+    if !method.trim().eq_ignore_ascii_case(expected_method) {
+        bail!("ICS METHOD 必須是 {expected_method}");
     }
     let event = calendar
         .events
@@ -1640,17 +1640,48 @@ pub fn forward(
 }
 
 pub fn send_invite(config: &Config, password: &str, ics: &str) -> Result<String> {
-    let (subject, recipients) = invite_details(ics)?;
+    send_itip(
+        config,
+        password,
+        ics,
+        "REQUEST",
+        "會議邀請",
+        "SMTP 會議邀請寄送失敗",
+    )
+}
+
+/// Sends an iTIP METHOD:CANCEL to the ATTENDEE recipients in `ics`.
+pub fn send_cancel(config: &Config, password: &str, ics: &str) -> Result<String> {
+    send_itip(
+        config,
+        password,
+        ics,
+        "CANCEL",
+        "會議取消",
+        "SMTP 會議取消寄送失敗",
+    )
+}
+
+fn send_itip(
+    config: &Config,
+    password: &str,
+    ics: &str,
+    method: &str,
+    label: &str,
+    failure: &'static str,
+) -> Result<String> {
+    let (subject, recipients) = invite_details(ics, method)?;
     let from = mailbox(&config.email, "寄件者")?;
     let mut builder = Message::builder().from(from).subject(subject.clone());
     for recipient in recipients {
         builder = builder.to(mailbox(&recipient, "會議收件者")?);
     }
     let message_id = format!("<{}@{}>", Uuid::new_v4(), config.smtp_host.trim());
-    let calendar_type = header::ContentType::parse("text/calendar; method=REQUEST; charset=utf-8")?;
+    let calendar_type =
+        header::ContentType::parse(&format!("text/calendar; method={method}; charset=utf-8"))?;
     let message = builder.message_id(Some(message_id.clone())).multipart(
         MultiPart::alternative()
-            .singlepart(SinglePart::plain(format!("會議邀請：{subject}\n\n{ics}")))
+            .singlepart(SinglePart::plain(format!("{label}：{subject}\n\n{ics}")))
             .singlepart(
                 SinglePart::builder()
                     .header(calendar_type)
@@ -1660,7 +1691,7 @@ pub fn send_invite(config: &Config, password: &str, ics: &str) -> Result<String>
     let (transport, _) = smtp_transport(config, password)?;
     transport
         .send(&message)
-        .map_err(|error| smtp_error(error, "SMTP 會議邀請寄送失敗"))?;
+        .map_err(|error| smtp_error(error, failure))?;
     Ok(message_id)
 }
 
