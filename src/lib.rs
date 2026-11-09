@@ -10,6 +10,7 @@ pub mod directory_cache;
 pub mod directory_chart;
 pub mod doctor;
 pub mod error;
+pub mod files;
 mod human_time;
 mod keychain;
 mod local_state;

@@ -18,6 +18,7 @@ description: Operate the m2k CLI for Mail2000 email, meeting room availability, 
 - 整理近期往來給自己當脈絡：先讀 `m2k mail graph --help`，在處理郵件、回信或準備會議前執行 `m2k mail graph --days 14`（Markdown，可直接當脈絡）或加 `--json`；聚焦某人用 `--person`。它只讀本機快取，資料過舊時先 `m2k --json sync --kind mail`。`awaiting_me` 是規則推估，回覆前用 `mail show ID` 讀原信確認。若明顯是系統通知卻被列為 `awaiting_me`，告訴使用者可用 `m2k config set --automated-senders` 加入名單，不要自行修改設定。
 - 了解人員與部門結構：先讀 `m2k directory chart --help`，執行 `m2k directory chart`（Markdown，可直接當脈絡）或加 `--json`；只看某部門用 `--branch PATH`。它只讀本機快取，沒有成員時請使用者同意後再執行 `directory sync --scope company`。部門樹不是匯報線：通訊錄沒有主管欄位，別從中推斷誰是誰的主管。
 - 共用通訊錄快取：先讀 `m2k directory export --help`。使用者要把已同步的公司通訊錄給其他機器或資料目錄用時，執行 `m2k directory export --output FILE`；讀取端設定 `M2K_DIRECTORY_CACHE=FILE` 後，`directory search`、`resolve`、`self`、`chart` 會在檔案較新時先匯入再查詢。stderr 的匯入警告表示仍在用本機快取，照實回報。
+- 找與下載共用檔案（SMB）：先讀 `m2k files --help` 與子命令 help。共用名稱用 `m2k --json files shares`（離線）；先以 `m2k --json files find SHARE/dir --name 關鍵字` 找到檔案，再用回傳的 `path` 執行 `m2k --json files get PATH --output FILE`，不要逐層 `ls` 整棵樹。`truncated: true` 時照實回報並縮小 PATH 或關鍵字；`skipped_dirs` 是沒有權限的資料夾。`get` 不覆寫既有檔案。`auth_failed` 一樣表示密碼遭拒：停止，不要重試。
 - 使用 TUI：先讀 `m2k tui --help`，在互動終端執行 `m2k tui`，於畫面按 `?` 查看操作。無 TTY 時用 `m2k tui --snapshot` 檢視畫面。
 - 新信 webhook：使用者要求把新郵件送到指定端點時，先讀 `m2k mail watch --help`，沿用帳號與資料目錄，執行 `mail watch --webhook-url URL`。首次只建立基準，相同網址重啟才接續；接收端依 `event_id` 去重，正文會傳至端點，Bearer token 由 `M2K_WEBHOOK_TOKEN` 提供。每輪 JSON 的 `delivery.error` 與 `status.mail_webhooks` 顯示送達／待送狀態，`--once` 結束仍可能待送；一般 `watch` 負責歷史與旗標同步及保存清理。fixture 成功與正式站台監看／實際接收端送達分開回報。
 
