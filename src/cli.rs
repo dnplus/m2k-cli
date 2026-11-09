@@ -83,6 +83,11 @@ pub enum Command {
         #[command(subcommand)]
         command: m2k::meeting::MeetingCommand,
     },
+    #[command(about = "唯讀存取 SMB 檔案伺服器：列出、搜尋與下載；沿用郵件帳號密碼")]
+    Files {
+        #[command(subcommand)]
+        command: m2k::files::FilesCommand,
+    },
     #[command(about = "安裝內附的 m2k 代理程式 skill")]
     Skills {
         #[command(subcommand)]

@@ -77,6 +77,20 @@ pub struct SiteProfile {
     /// Rooms listed even when DAV resource discovery is unavailable.
     #[serde(default)]
     pub rooms: Vec<RoomEntry>,
+    /// SMB file server for `m2k files`, logged in with the mail account and password.
+    #[serde(default)]
+    pub file_server: Option<FileServer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FileServer {
+    pub server: String,
+    #[serde(default)]
+    pub shares: Vec<String>,
+    /// Logs in as `DOMAIN\user` when set, otherwise as the bare account name.
+    #[serde(default)]
+    pub domain: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -272,6 +286,11 @@ impl SiteProfile {
             .any(|room| room.name.trim().is_empty() || room.access.trim().is_empty())
         {
             bail!("site profile 的 rooms 需要 name 與 access");
+        }
+        if let Some(files) = &self.file_server {
+            if files.server.trim().is_empty() || files.shares.iter().any(|s| s.trim().is_empty()) {
+                bail!("site profile 的 file_server 需要 server，shares 不可有空白名稱");
+            }
         }
         Ok(())
     }

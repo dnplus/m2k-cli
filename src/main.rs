@@ -343,6 +343,7 @@ fn execute(cli: Cli) -> Result<()> {
         },
         Some(Command::Directory { command }) => m2k::directory::execute(&dir, command, json)?,
         Some(Command::Meeting { command }) => m2k::meeting::execute(&dir, command, json)?,
+        Some(Command::Files { command }) => m2k::files::execute(&dir, command, json)?,
         Some(Command::Skills { command }) => match command {
             SkillsCommand::Install { path } => {
                 let result = m2k::skills::install(path.as_deref())?;

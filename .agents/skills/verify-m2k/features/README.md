@@ -44,6 +44,7 @@ Each file has an H1, one paragraph, and four H2s in order: `Sub-features`, `How 
 - [TUI meeting RSVP](./tui-rsvp.md) — invite summary in mail detail, `i` accept/decline/tentative with comment, confirm/Esc, no-invite and demo refusal, fixture REPLY send.
 - [Calendar create / edit / delete](./calendar-crud.md) — CLI `calendar create/update --title …`, TUI `n`/`e`/`x` with confirmation, guards, demo refusal, fixture writes and ETag conflict.
 - [Config and retention](./config-retention.md) — `config set` persists across processes.
+- [File server (SMB)](./files.md) — `files shares` offline and missing-`file_server` error, demo refusal; online `ls`/`find`/`get` covered by `tests/files.rs`.
 - [Offline guard and JSON errors](./offline-guard.md) — demo refuses online writes; JSON error contract.
 
 ## Not yet mapped

@@ -12,5 +12,10 @@
     { "name": "N-Board_12", "access": "example-north-board" },
     { "name": "N-Focus_04", "access": "example-north-focus" },
     { "name": "S-Huddle_06", "access": "example-south-huddle" }
-  ]
+  ],
+  "file_server": {
+    "server": "files.example.test",
+    "shares": ["Shared", "Projects"],
+    "domain": null
+  }
 }
