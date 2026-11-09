@@ -52,7 +52,7 @@ m2k tui
 
 `auth login` 隱藏輸入密碼，檢查四種服務後存入系統密碼庫。`auth logout` 移除密碼，保留離線資料。自動化環境可提供 `M2K_PASSWORD`，程式不會把它寫進設定或 SQLite。設定與資料檔權限為 `0600`，資料目錄為 `0700`；這是本機檔案存取保護，SQLite 內容沒有另行加密。
 
-`m2k doctor`（可加 `--json`）是唯讀的驗收前檢查，一次回答「這台機器、這個帳號能不能開始正式驗收」。逐項回報 `pass`／`warn`／`fail`／`skip` 與原因（`warn` 不算失敗）：`build`（版本與 build commit）、`data_dir`（0700）、`config`（存在、有效、0600）、`site_profile`（實際生效的 profile）、`credentials`（系統密碼庫或 `M2K_PASSWORD`）、`imap`、`smtp`、`caldav`、`carddav`（登入並探索 principal／collection）、`database`（可開啟且 schema 為最新）、`sync_lock`（沒有被其他程序占用）。展示資料目錄會把所有線上與憑證檢查標為 `skip` 並註明原因。任何一項 `fail` 即以狀態 1 結束；`--json` 不論成功或失敗，都從同一個頂層路徑讀結果：`checks`、`version`、`build_commit`、`data_dir`、`demo`。失敗時另外沿用錯誤契約（`state:"error"`、`error.code:"doctor_failed"`）。doctor 不寄信、不改旗標、不寫行事曆、不建立或遷移任何本機檔案，錯誤訊息也不會出現密碼；SMTP 只做連線與認證測試。
+`m2k doctor`（可加 `--json`）是唯讀的驗收前檢查，一次回答「這台機器、這個帳號能不能開始正式驗收」。逐項回報 `pass`／`warn`／`fail`／`skip` 與原因（`warn` 不算失敗）：`build`（版本與 build commit）、`data_dir`（0700）、`config`（存在、有效、0600）、`site_profile`（實際生效的 profile）、`credentials`（系統密碼庫或 `M2K_PASSWORD`）、`imap`、`smtp`、`caldav`、`carddav`（登入並探索 principal／collection）、`database`（可開啟且 schema 為最新）、`sync_lock`（沒有被其他程序占用）。展示資料目錄會把所有線上與憑證檢查標為 `skip` 並註明原因。任一服務的登入遭拒（`auth_failed`）時，其餘服務標為 `skip`、不再登入，避免一次 doctor 累積多次失敗而鎖住帳號；`sync` 同時同步多種資料時也一樣，第一個種類遭拒後其餘種類不再登入。任何一項 `fail` 即以狀態 1 結束；`--json` 不論成功或失敗，都從同一個頂層路徑讀結果：`checks`、`version`、`build_commit`、`data_dir`、`demo`。失敗時另外沿用錯誤契約（`state:"error"`、`error.code:"doctor_failed"`）。doctor 不寄信、不改旗標、不寫行事曆、不建立或遷移任何本機檔案，錯誤訊息也不會出現密碼；SMTP 只做連線與認證測試。
 
 若網路擋住 SMTP 587，可執行 `m2k config set --smtp-port 465`，改用 implicit TLS。
 

@@ -286,6 +286,17 @@ fn run_with_policy(
             if !seen.insert(kind) {
                 continue;
             }
+            if results.iter().any(|result: &SyncResult| {
+                result.code.as_deref() == Some(crate::error::AUTH_FAILED)
+            }) {
+                results.push(SyncResult {
+                    kind,
+                    count: 0,
+                    code: Some(crate::error::AUTH_FAILED.to_owned()),
+                    error: Some("前一項登入遭拒絕；為免鎖住帳號，未再嘗試登入".to_owned()),
+                });
+                continue;
+            }
             progress.update("fetching", Some(kind), 0)?;
             let existing = store.list(kind, None, None, usize::MAX)?;
             let now = Utc::now();

@@ -81,11 +81,20 @@ fn setup(imap_port: Option<u16>) -> Setup {
 }
 
 fn rejected_logins(info: &fixture::Info) -> usize {
+    events(info, "imap.login_rejected")
+}
+
+fn events(info: &fixture::Info, kind: &str) -> usize {
+    let needle = format!("\"{kind}\"");
     std::fs::read_to_string(&info.events)
         .unwrap_or_default()
         .lines()
-        .filter(|line| line.contains("\"imap.login_rejected\""))
+        .filter(|line| line.contains(&needle))
         .count()
+}
+
+fn all_rejections(info: &fixture::Info) -> usize {
+    events(info, "imap.login_rejected") + events(info, "dav.unauthorized")
 }
 
 fn assert_auth_failed(json: &Value) {
@@ -239,4 +248,52 @@ fn mail_watch_still_reconnects_after_network_failure() {
         exited.is_none(),
         "network failure must keep the watcher alive"
     );
+}
+
+#[test]
+fn sync_of_several_kinds_stops_logging_in_after_the_first_rejection() {
+    let setup = setup(None);
+
+    let (success, json) = run(&setup, WRONG, &["sync"]);
+    assert!(!success);
+    assert_auth_failed(&json);
+    let kinds: Vec<_> = json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["code"].clone())
+        .collect();
+    assert_eq!(kinds, ["auth_failed", "auth_failed"], "{json}");
+    assert_eq!(
+        all_rejections(&setup.info),
+        1,
+        "mail and calendar together reach the server once: {json}"
+    );
+}
+
+#[test]
+fn doctor_skips_remaining_services_after_a_rejected_login() {
+    let setup = setup(None);
+
+    let (success, json) = run(&setup, WRONG, &["doctor"]);
+    assert!(!success);
+    let status = |name: &str| {
+        json["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == name)
+            .unwrap_or_else(|| panic!("no {name} check: {json}"))["status"]
+            .clone()
+    };
+    assert_eq!(status("imap"), "fail", "{json}");
+    for name in ["smtp", "caldav", "carddav"] {
+        assert_eq!(
+            status(name),
+            "skip",
+            "{name} must not log in after IMAP rejected: {json}"
+        );
+    }
+    assert_eq!(all_rejections(&setup.info), 1, "{json}");
+    assert!(!json.to_string().contains(WRONG), "password leaked: {json}");
 }
