@@ -22,6 +22,7 @@ use std::{
 };
 
 fn main() {
+    exit_quietly_on_broken_stdout();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error)
@@ -61,6 +62,29 @@ fn main() {
         std::process::exit(1);
     }
 }
+
+/// `m2k … | head` closes stdout early and `println!` panics on EPIPE. Exit with
+/// 141 (128 + SIGPIPE, what the shell reports for `cat`) instead of a panic.
+/// SIGPIPE itself stays ignored so writes to child processes such as the
+/// keychain helper still fail as errors rather than killing m2k.
+#[cfg(unix)]
+fn exit_quietly_on_broken_stdout() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let message = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .unwrap_or_default();
+        if message.starts_with("failed printing to stdout") && message.ends_with("(os error 32)") {
+            std::process::exit(141);
+        }
+        default(info);
+    }));
+}
+
+#[cfg(not(unix))]
+fn exit_quietly_on_broken_stdout() {}
 
 fn execute(cli: Cli) -> Result<()> {
     let dir = cli.data_dir.unwrap_or_else(|| {
