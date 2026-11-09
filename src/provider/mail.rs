@@ -1248,7 +1248,12 @@ pub fn move_to(config: &Config, password: &str, item: &Item, target: &str) -> Re
 }
 
 async fn find_trash(session: &mut ImapSession, source: &str) -> Result<Option<String>> {
-    let folders = list_folders(session).await?;
+    Ok(pick_trash(list_folders(session).await?, source))
+}
+
+// IMAP returns mailbox names in modified UTF-7 (回收筒 is `&Vt5lNntS-`), so
+// match on the decoded name but hand back the raw name for UID MOVE/COPY.
+fn pick_trash(folders: Vec<String>, source: &str) -> Option<String> {
     let preferred = [
         "Trash",
         "INBOX.Trash",
@@ -1257,16 +1262,15 @@ async fn find_trash(session: &mut ImapSession, source: &str) -> Result<Option<St
         "垃圾桶",
         "回收筒",
     ];
-    for candidate in preferred {
-        if folders.iter().any(|folder| {
-            folder.eq_ignore_ascii_case(candidate) && !folder.eq_ignore_ascii_case(source)
-        }) {
-            return Ok(folders.into_iter().find(|folder| {
-                folder.eq_ignore_ascii_case(candidate) && !folder.eq_ignore_ascii_case(source)
-            }));
-        }
-    }
-    Ok(None)
+    preferred.into_iter().find_map(|candidate| {
+        folders
+            .iter()
+            .find(|folder| {
+                display_collection(folder).eq_ignore_ascii_case(candidate)
+                    && !folder.eq_ignore_ascii_case(source)
+            })
+            .cloned()
+    })
 }
 
 pub fn delete(config: &Config, password: &str, item: &Item) -> Result<()> {
@@ -1960,6 +1964,17 @@ pub fn normalize_cached(item: &mut Item) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn pick_trash_matches_modified_utf7_names_and_keeps_raw_name() {
+        let folders = vec!["INBOX".to_owned(), "&Vt5lNntS-".to_owned()];
+        assert_eq!(
+            pick_trash(folders.clone(), "INBOX").as_deref(),
+            Some("&Vt5lNntS-")
+        );
+        // Deleting from the trash itself must not move into itself.
+        assert_eq!(pick_trash(folders, "&Vt5lNntS-"), None);
+    }
     use super::*;
     use std::{
         io::{BufRead, Read, Write},
