@@ -36,6 +36,7 @@ hmac = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
 unicode-width = "0.2"
+smb = "0.12.1"
 
 # macOS uses /usr/bin/security instead (src/keychain.rs).
 [target.'cfg(not(target_os = "macos"))'.dependencies]
@@ -45,6 +46,7 @@ keyring = { version = "3", features = ["windows-native", "sync-secret-service"] 
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
+smb-server = "0.10"
 
 [profile.release]
 lto = "thin"

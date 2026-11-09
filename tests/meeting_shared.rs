@@ -36,6 +36,10 @@ struct DavServer {
 
 impl DavServer {
     fn start() -> Self {
+        Self::start_with(route)
+    }
+
+    fn start_with(route: fn(&str) -> (&'static str, String)) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -792,5 +796,41 @@ fn branch_scan_without_a_complete_cache_is_not_the_default_list() {
     assert!(
         emails_of(&again).contains(&SHARED),
         "default list lost the colleague outside the last branch: {again}"
+    );
+}
+
+fn route_password_revoked_after_delegation(path: &str) -> (&'static str, String) {
+    if path.trim_end_matches('/') == format!("{PRINCIPALS}/{ME}") {
+        return ("207 Multi-Status", delegation_xml());
+    }
+    ("401 Unauthorized", String::new())
+}
+
+#[test]
+fn a_rejected_login_mid_scan_stops_every_worker_instead_of_probing_everyone() {
+    let server = DavServer::start_with(route_password_revoked_after_delegation);
+    let dir = setup(&server);
+
+    let output = run(&dir, &["meeting", "shared", "--refresh"])
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["error"]["code"], "auth_failed", "{json}");
+
+    let homes = server
+        .requested()
+        .iter()
+        .filter(|request| request.contains(CALENDARS))
+        .count();
+    let candidates = FILLERS + 3;
+    assert!(
+        homes < candidates,
+        "every one of {candidates} colleagues was probed with a rejected password ({homes} requests)"
+    );
+    assert!(
+        homes <= 2 * 12,
+        "{homes} home requests after the first rejection"
     );
 }

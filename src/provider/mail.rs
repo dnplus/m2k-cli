@@ -220,7 +220,10 @@ async fn connect_imap(config: &Config, password: &str) -> Result<ImapSession> {
     let session = timeout(IMAP_TIMEOUT, client.login(username, password))
         .await
         .map_err(|_| anyhow!("IMAP 登入逾時"))?
-        .map_err(|(error, _)| anyhow!("IMAP 登入失敗: {error}"))?;
+        .map_err(|(error, _)| match error {
+            async_imap::error::Error::No(_) => crate::error::auth_failed("IMAP", &error).into(),
+            error => anyhow!("IMAP 登入失敗: {error}"),
+        })?;
     Ok(session)
 }
 
@@ -1385,9 +1388,24 @@ fn smtp_transport(config: &Config, password: &str) -> Result<(SmtpTransport, Opt
     ))
 }
 
+fn smtp_error(error: lettre::transport::smtp::Error, context: &'static str) -> anyhow::Error {
+    if error.is_permanent()
+        && error
+            .status()
+            .is_some_and(|code| matches!(code.to_string().as_str(), "530" | "534" | "535"))
+    {
+        crate::error::auth_failed("SMTP", &error).into()
+    } else {
+        anyhow::Error::new(error).context(context)
+    }
+}
+
 pub fn verify_smtp(config: &Config, password: &str) -> Result<Option<u16>> {
     let (transport, fallback) = smtp_transport(config, password)?;
-    if !transport.test_connection().context("SMTP 驗證失敗")? {
+    if !transport
+        .test_connection()
+        .map_err(|error| smtp_error(error, "SMTP 驗證失敗"))?
+    {
         bail!("SMTP 驗證失敗：伺服器拒絕連線");
     }
     Ok(fallback)
@@ -1549,7 +1567,9 @@ pub fn send(config: &Config, password: &str, mail: &OutgoingMail) -> Result<Stri
         builder.multipart(multipart)?
     };
     let (transport, _) = smtp_transport(config, password)?;
-    transport.send(&message).context("SMTP 寄信失敗")?;
+    transport
+        .send(&message)
+        .map_err(|error| smtp_error(error, "SMTP 寄信失敗"))?;
     Ok(message_id)
 }
 
@@ -1609,7 +1629,9 @@ pub fn forward(
                 ),
         )?;
     let (transport, _) = smtp_transport(config, password)?;
-    transport.send(&message).context("SMTP 轉寄失敗")?;
+    transport
+        .send(&message)
+        .map_err(|error| smtp_error(error, "SMTP 轉寄失敗"))?;
     Ok(message_id)
 }
 
@@ -1632,7 +1654,9 @@ pub fn send_invite(config: &Config, password: &str, ics: &str) -> Result<String>
             ),
     )?;
     let (transport, _) = smtp_transport(config, password)?;
-    transport.send(&message).context("SMTP 會議邀請寄送失敗")?;
+    transport
+        .send(&message)
+        .map_err(|error| smtp_error(error, "SMTP 會議邀請寄送失敗"))?;
     Ok(message_id)
 }
 
@@ -1664,7 +1688,9 @@ pub fn send_calendar_reply(
             ),
     )?;
     let (transport, _) = smtp_transport(config, password)?;
-    transport.send(&message).context("SMTP 會議回覆寄送失敗")?;
+    transport
+        .send(&message)
+        .map_err(|error| smtp_error(error, "SMTP 會議回覆寄送失敗"))?;
     Ok(message_id)
 }
 

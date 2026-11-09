@@ -21,7 +21,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Mutex,
     },
 };
@@ -1121,15 +1121,22 @@ fn collect_shared(
     let calendars_url = profile.caldav_calendars_url(&origin);
     let results = Mutex::new(Vec::with_capacity(candidates.len()));
     let next = AtomicUsize::new(0);
+    let rejected = AtomicBool::new(false);
     std::thread::scope(|scope| {
         for _ in 0..SHARED_SCAN_WORKERS.min(candidates.len()) {
             scope.spawn(|| loop {
+                if rejected.load(Ordering::Relaxed) {
+                    break;
+                }
                 let index = next.fetch_add(1, Ordering::Relaxed);
                 let Some((email, id)) = candidates.get(index) else {
                     break;
                 };
                 let home = format!("{calendars_url}/{}/", percent_encode_segment(id));
                 let found = session.readable_calendars(&home);
+                if found.as_ref().is_err_and(crate::error::is_auth_failed) {
+                    rejected.store(true, Ordering::Relaxed);
+                }
                 results
                     .lock()
                     .expect("shared scan results lock")
@@ -1137,11 +1144,18 @@ fn collect_shared(
             });
         }
     });
+    let mut results = results.into_inner().expect("shared scan results lock");
+    if let Some(index) = results
+        .iter()
+        .position(|(_, found)| found.as_ref().is_err_and(crate::error::is_auth_failed))
+    {
+        return Err(results.swap_remove(index).1.unwrap_err());
+    }
     let checked_at = Utc::now();
     let mut colleagues = Vec::new();
     let mut warnings = Vec::new();
     let mut failed = BTreeSet::new();
-    for (email, found) in results.into_inner().expect("shared scan results lock") {
+    for (email, found) in results {
         match found {
             Ok(calendars) if calendars.is_empty() => {}
             Ok(mut calendars) => {

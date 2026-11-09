@@ -52,7 +52,7 @@ m2k tui
 
 `auth login` 隱藏輸入密碼，檢查四種服務後存入系統密碼庫。`auth logout` 移除密碼，保留離線資料。自動化環境可提供 `M2K_PASSWORD`，程式不會把它寫進設定或 SQLite。設定與資料檔權限為 `0600`，資料目錄為 `0700`；這是本機檔案存取保護，SQLite 內容沒有另行加密。
 
-`m2k doctor`（可加 `--json`）是唯讀的驗收前檢查，一次回答「這台機器、這個帳號能不能開始正式驗收」。逐項回報 `pass`／`warn`／`fail`／`skip` 與原因（`warn` 不算失敗）：`build`（版本與 build commit）、`data_dir`（0700）、`config`（存在、有效、0600）、`site_profile`（實際生效的 profile）、`credentials`（系統密碼庫或 `M2K_PASSWORD`）、`imap`、`smtp`、`caldav`、`carddav`（登入並探索 principal／collection）、`database`（可開啟且 schema 為最新）、`sync_lock`（沒有被其他程序占用）。展示資料目錄會把所有線上與憑證檢查標為 `skip` 並註明原因。任何一項 `fail` 即以狀態 1 結束；`--json` 不論成功或失敗，都從同一個頂層路徑讀結果：`checks`、`version`、`build_commit`、`data_dir`、`demo`。失敗時另外沿用錯誤契約（`state:"error"`、`error.code:"doctor_failed"`）。doctor 不寄信、不改旗標、不寫行事曆、不建立或遷移任何本機檔案，錯誤訊息也不會出現密碼；SMTP 只做連線與認證測試。
+`m2k doctor`（可加 `--json`）是唯讀的驗收前檢查，一次回答「這台機器、這個帳號能不能開始正式驗收」。逐項回報 `pass`／`warn`／`fail`／`skip` 與原因（`warn` 不算失敗）：`build`（版本與 build commit）、`data_dir`（0700）、`config`（存在、有效、0600）、`site_profile`（實際生效的 profile）、`credentials`（系統密碼庫或 `M2K_PASSWORD`）、`imap`、`smtp`、`caldav`、`carddav`（登入並探索 principal／collection）、`database`（可開啟且 schema 為最新）、`sync_lock`（沒有被其他程序占用）。展示資料目錄會把所有線上與憑證檢查標為 `skip` 並註明原因。任一服務的登入遭拒（`auth_failed`）時，其餘服務標為 `skip`、不再登入，避免一次 doctor 累積多次失敗而鎖住帳號；`sync` 同時同步多種資料時也一樣，第一個種類遭拒後其餘種類不再登入。任何一項 `fail` 即以狀態 1 結束；`--json` 不論成功或失敗，都從同一個頂層路徑讀結果：`checks`、`version`、`build_commit`、`data_dir`、`demo`。失敗時另外沿用錯誤契約（`state:"error"`、`error.code:"doctor_failed"`）。doctor 不寄信、不改旗標、不寫行事曆、不建立或遷移任何本機檔案，錯誤訊息也不會出現密碼；SMTP 只做連線與認證測試。
 
 若網路擋住 SMTP 587，可執行 `m2k config set --smtp-port 465`，改用 implicit TLS。
 
@@ -81,11 +81,12 @@ m2k init --username your_account --email your_account@example.com \
   "sites": [{ "name": "北區", "prefixes": ["北區"] }],
   "default_site": "北區",
   "room_capacity_from_name_suffix": true,
-  "rooms": [{ "name": "北區甲室_10", "access": "ROOM_ACCESS_NAME" }]
+  "rooms": [{ "name": "北區甲室_10", "access": "ROOM_ACCESS_NAME" }],
+  "file_server": { "server": "files.example.com", "shares": ["Shared", "Projects"], "domain": null }
 }
 ```
 
-除了 `name` 以外都可省略；`{domain}` 代入帳號 email 的網域。profile 有 `server` 時，`init --site-profile NAME|FILE` 可省略 `--server`。`site-profiles/` 中格式錯誤的檔案在依伺服器自動選用時會被略過，以名稱指定時才報錯。
+除了 `name` 以外都可省略；`file_server` 供 `m2k files` 使用（見下方「檔案伺服器（SMB）」），`domain` 有值時以 `DOMAIN\帳號` 登入；`{domain}` 代入帳號 email 的網域。profile 有 `server` 時，`init --site-profile NAME|FILE` 可省略 `--server`。`site-profiles/` 中格式錯誤的檔案在依伺服器自動選用時會被略過，以名稱指定時才報錯。
 
 ## 同步與循環保存
 
@@ -117,7 +118,7 @@ m2k prune
 {"state":"error","error":{"code":"not_found","message":"找不到項目：missing-id","retryable":false}}
 ```
 
-`account_busy` 表示操作尚未開始，可稍後再試。其他錯誤不建議自動重試。部分同步失敗回傳 `state: partial`、`error.code: partial_sync` 與各資料域 `results`；已有 DAV 遠端寫入 receipt、訂房 `partial`／`unknown` 契約保留。`watch --json` 每個週期輸出一行 JSON，成功為 `state: complete`，部分失敗沿用 `partial_sync` 契約；每行皆附 `time`。`--help`／`--version` 及明確要求的 raw／snapshot 仍是文字輸出。
+`account_busy` 表示操作尚未開始，可稍後再試。其他錯誤不建議自動重試。`auth_failed` 表示 IMAP LOGIN、SMTP 認證（530／534／535）或 CalDAV／CardDAV HTTP 401 拒絕了帳號或密碼；密碼即 AD 密碼，重複嘗試可能鎖住帳號，請確認密碼後執行 `m2k auth login`。逾時、DNS、TLS 與 5xx 不歸為 `auth_failed`。部分同步失敗回傳 `state: partial`、`error.code: partial_sync` 與各資料域 `results`，失敗的資料域附 `code`；任一資料域為 `auth_failed` 時，`error.code` 改為 `auth_failed`；已有 DAV 遠端寫入 receipt、訂房 `partial`／`unknown` 契約保留。`watch --json` 每個週期輸出一行 JSON，成功為 `state: complete`，部分失敗沿用 `partial_sync` 契約；每行皆附 `time`。遇到 `auth_failed`（含部分同步）時 `watch` 不再重試，輸出該錯誤 JSON 後以非零狀態結束；其他錯誤照常等下個週期。`--help`／`--version` 及明確要求的 raw／snapshot 仍是文字輸出。
 
 ## 郵件
 
@@ -206,7 +207,7 @@ def verify(secret: bytes, headers: dict, raw_body: bytes, tolerance=300) -> bool
     return hmac.compare_digest(expected, sent)
 ```
 
-程序每輪輸出一行 JSON，包含 `state`、`transport`、`baseline`、`cursor`、`new_mail`、`parse_errors` 與 `delivery`，結束時輸出 `stopped`。`--once` 執行一輪查詢與送達嘗試後結束，可能仍有待送事件；以 `delivery.error` 與 `status.mail_webhooks` 的 `pending`／`last_error`／`next_attempt_at` 確認。此命令專注新信；歷史同步、旗標更新與保存週期由 `sync`／一般 `watch`／`prune` 執行，清理快取不移除待送 payload。
+程序每輪輸出一行 JSON，包含 `state`、`transport`、`baseline`、`cursor`、`new_mail`、`parse_errors` 與 `delivery`，結束時輸出 `stopped`。IMAP 連線錯誤輸出 `state: reconnecting`，以 10 秒起倍增至最多 300 秒重連；IMAP LOGIN 被拒時不再重連，輸出 `state: error`、`error.code: auth_failed` 後以非零狀態結束。`--once` 執行一輪查詢與送達嘗試後結束，可能仍有待送事件；以 `delivery.error` 與 `status.mail_webhooks` 的 `pending`／`last_error`／`next_attempt_at` 確認。此命令專注新信；歷史同步、旗標更新與保存週期由 `sync`／一般 `watch`／`prune` 執行，清理快取不移除待送 payload。
 
 ## 行事曆與聯絡人
 
@@ -282,6 +283,21 @@ M2K_DIRECTORY_CACHE=/shared/m2k-dir.json m2k directory resolve '王小明'
 - 檔案的 `generated_at` 比這個資料目錄上次匯入的時間新時，m2k 把檔案內各分支當成權威快照匯入本機快取，已離職者會被移除，stderr 印出匯入筆數。同一份檔案不會重複匯入。
 - 檔案不存在、無法讀取或格式不符時，m2k 只在 stderr 警告，照常使用本機快取查詢。
 - 匯入只寫入自己的資料目錄，檔案所在目錄可以是唯讀。
+
+## 檔案伺服器（SMB）
+
+`m2k files` 唯讀存取 Windows／SMB 檔案伺服器，沿用 m2k 的帳號與密碼：以帳號 email 的 `@` 前段（例如 `alice`）登入，site profile 的 `file_server.domain` 有值時改用 `DOMAIN\alice`。使用 NTLM，不支援 Kerberos，也不列舉伺服器上的共用資料夾；共用名稱來自 profile 的 `file_server.shares` 或路徑本身。
+
+```sh
+m2k files shares                                   # 離線讀 profile 的 server 與 shares
+m2k files ls Shared/Team
+m2k files find Shared --name 預算 --depth 3 --limit 100
+m2k files get 'Shared/Team/預算 2026.xlsx' --output ./預算.xlsx
+```
+
+PATH 可寫成 `SHARE/dir/sub`（伺服器取自 `file_server.server`；SHARE 可以是任何共用名稱，不限 `shares` 所列）、`\\server\share\dir` 或 `smb://server/share/dir`；`/` 與 `\` 視為相同，名稱照字面使用（不做 `%` 解碼）。`ls`／`find` 每筆回傳 `name`、`kind`（`file`／`dir`）、`size`、`modified`（RFC3339）與可直接再傳入的 `path`（`smb://` 形式），不含 `.`／`..`。`find` 以不分大小寫的子字串比對名稱，`--depth 1` 只看 PATH 本身的內容；達 `--limit` 或約 120 秒上限時停止並回傳 `truncated: true` 與 `truncated_reason`（`limit`／`time_limit`），無法開啟的子資料夾略過並計入 `skipped_dirs`。`get` 先寫入目標旁的暫存檔，完成後才建立目標檔，目標已存在時拒絕且不覆寫，回傳 `bytes` 與 `output`。
+
+錯誤沿用錯誤契約：密碼遭拒（Logon Failure）為 `auth_failed`、不重試；找不到路徑或共用為 `not_found`；權限不足為 `permission_denied`；逾時與連線失敗為 `network_timeout`／`network_error`。展示資料目錄不連線。`doctor`、`sync`、`watch` 不涵蓋檔案伺服器。
 
 ## 會議與會議室
 

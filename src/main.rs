@@ -21,26 +21,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// 讀取端提早關閉 stdout（如 `| head`）時，`println!` 會 panic；比照 Unix 工具以 SIGPIPE 慣例的 141 安靜結束。
-/// 不把 SIGPIPE 改回預設：那會讓 IMAP／SMTP socket 與 `security` 子程序的管線錯誤直接砍掉程序，而不是回報錯誤。
-fn exit_quietly_when_stdout_closes() {
-    let default = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let payload = info.payload();
-        let message = payload
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| payload.downcast_ref::<&str>().copied())
-            .unwrap_or_default();
-        if message.starts_with("failed printing to stdout") && message.contains("Broken pipe") {
-            std::process::exit(141);
-        }
-        default(info);
-    }));
-}
-
 fn main() {
-    exit_quietly_when_stdout_closes();
+    exit_quietly_on_broken_stdout();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error)
@@ -80,6 +62,29 @@ fn main() {
         std::process::exit(1);
     }
 }
+
+/// `m2k … | head` closes stdout early and `println!` panics on EPIPE. Exit with
+/// 141 (128 + SIGPIPE, what the shell reports for `cat`) instead of a panic.
+/// SIGPIPE itself stays ignored so writes to child processes such as the
+/// keychain helper still fail as errors rather than killing m2k.
+#[cfg(unix)]
+fn exit_quietly_on_broken_stdout() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let message = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .unwrap_or_default();
+        if message.starts_with("failed printing to stdout") && message.ends_with("(os error 32)") {
+            std::process::exit(141);
+        }
+        default(info);
+    }));
+}
+
+#[cfg(not(unix))]
+fn exit_quietly_on_broken_stdout() {}
 
 fn execute(cli: Cli) -> Result<()> {
     let dir = cli.data_dir.unwrap_or_else(|| {
@@ -285,6 +290,7 @@ fn execute(cli: Cli) -> Result<()> {
                     kind: Kind::Contacts,
                     count: result.count,
                     error: None,
+                    code: None,
                 }]
             } else {
                 sync::run(&dir, &kinds(kind))?
@@ -337,6 +343,7 @@ fn execute(cli: Cli) -> Result<()> {
         },
         Some(Command::Directory { command }) => m2k::directory::execute(&dir, command, json)?,
         Some(Command::Meeting { command }) => m2k::meeting::execute(&dir, command, json)?,
+        Some(Command::Files { command }) => m2k::files::execute(&dir, command, json)?,
         Some(Command::Skills { command }) => match command {
             SkillsCommand::Install { path } => {
                 let result = m2k::skills::install(path.as_deref())?;
@@ -380,11 +387,22 @@ fn kinds(kind: Option<Kind>) -> Vec<Kind> {
 }
 
 fn check_credentials(cfg: &config::Config, pass: &str) -> Result<Option<u16>> {
-    let fallback = provider::mail::verify(cfg, pass)
-        .map_err(|e| anyhow::anyhow!("{}", format!("{e:#}").replace(pass, "[已隱藏]")))?;
+    let redact = |e: anyhow::Error| {
+        let message = format!("{e:#}").replace(pass, "[已隱藏]");
+        if m2k::error::is_auth_failed(&e) {
+            m2k::error::Failure {
+                code: m2k::error::AUTH_FAILED,
+                message,
+                retryable: false,
+            }
+            .into()
+        } else {
+            anyhow::anyhow!("{message}")
+        }
+    };
+    let fallback = provider::mail::verify(cfg, pass).map_err(redact)?;
     for kind in [Kind::Calendar, Kind::Contacts] {
-        provider::dav::verify(cfg, pass, kind)
-            .map_err(|e| anyhow::anyhow!("{}", format!("{e:#}").replace(pass, "[已隱藏]")))?;
+        provider::dav::verify(cfg, pass, kind).map_err(redact)?;
     }
     Ok(fallback)
 }
@@ -420,9 +438,14 @@ fn watch(dir: &Path, kind: Option<Kind>, json: bool) -> Result<()> {
     ctrlc::set_handler(move || signal.store(true, Ordering::Relaxed))?;
     while !stop.load(Ordering::Relaxed) {
         let output = match sync::run_periodic(dir, &kinds(kind)) {
-            Ok(results) if results.iter().any(|result| result.error.is_some()) => Some(
-                m2k::error::ErrorOutput::json(&m2k::error::PartialSync(results).into()),
-            ),
+            Ok(results) if results.iter().any(|result| result.error.is_some()) => {
+                let partial = m2k::error::PartialSync(results).into();
+                if m2k::error::is_auth_failed(&partial) {
+                    return Err(partial);
+                }
+                Some(m2k::error::ErrorOutput::json(&partial))
+            }
+            Err(error) if m2k::error::is_auth_failed(&error) => return Err(error),
             Ok(results) => Some(serde_json::json!({"state":"complete","results":results})),
             Err(error) if json => Some(m2k::error::ErrorOutput::json(&error)),
             Err(error) => {
