@@ -7,7 +7,7 @@ description: Operate the m2k CLI for Mail2000 email, meeting room availability, 
 
 先讀目前安裝版本的 `m2k --help`，再讀與任務有關的子命令 `--help`，確認參數與功能後才執行。CLI help 是介面的來源；不要把 README 的命令清單複製成操作規格。若只有原始碼，於專案目錄用 `cargo run -- --help`，後續命令同樣透過 `cargo run --` 執行。
 
-沿用使用者指定的 `--data-dir` 與既有帳號。代理程式讀結果時加 `--json`；密碼由既有登入設定取得。會議室查詢的 `unknown` 與查詢錯誤必須保留，包含 403 的未知結果不能算空閒。精確時段查詢只推薦 `free`；加 `--minutes` 找空檔時，推薦已確認的 `available_slots`，即使整個搜尋窗的狀態是 `busy`。寄送、邀請、預約或刪除依使用者已給的授權執行。
+沿用使用者指定的 `--data-dir` 與既有帳號。代理程式讀結果時加 `--json`；密碼由既有登入設定取得。會議室查詢的 `unknown` 與查詢錯誤必須保留，包含 403 的未知結果不能算空閒。精確時段查詢只推薦 `free`；加 `--minutes` 找空檔時，推薦已確認的 `available_slots`，即使整個搜尋窗的狀態是 `busy`。寄送、邀請、預約或刪除依使用者已給的授權執行。錯誤碼 `auth_failed` 表示伺服器拒絕帳號或密碼（AD 密碼，重試可能鎖帳號）：不要重試或重跑 `watch`／`mail watch`，請使用者更新密碼並執行 `m2k auth login`。
 
 常見任務的入口與範例；以剛讀到的 help 校正參數，替換日期、收件人與檔案路徑：
 

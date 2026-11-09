@@ -117,7 +117,7 @@ m2k prune
 {"state":"error","error":{"code":"not_found","message":"找不到項目：missing-id","retryable":false}}
 ```
 
-`account_busy` 表示操作尚未開始，可稍後再試。其他錯誤不建議自動重試。部分同步失敗回傳 `state: partial`、`error.code: partial_sync` 與各資料域 `results`；已有 DAV 遠端寫入 receipt、訂房 `partial`／`unknown` 契約保留。`watch --json` 每個週期輸出一行 JSON，成功為 `state: complete`，部分失敗沿用 `partial_sync` 契約；每行皆附 `time`。`--help`／`--version` 及明確要求的 raw／snapshot 仍是文字輸出。
+`account_busy` 表示操作尚未開始，可稍後再試。其他錯誤不建議自動重試。`auth_failed` 表示 IMAP LOGIN、SMTP 認證（530／534／535）或 CalDAV／CardDAV HTTP 401 拒絕了帳號或密碼；密碼即 AD 密碼，重複嘗試可能鎖住帳號，請確認密碼後執行 `m2k auth login`。逾時、DNS、TLS 與 5xx 不歸為 `auth_failed`。部分同步失敗回傳 `state: partial`、`error.code: partial_sync` 與各資料域 `results`，失敗的資料域附 `code`；任一資料域為 `auth_failed` 時，`error.code` 改為 `auth_failed`；已有 DAV 遠端寫入 receipt、訂房 `partial`／`unknown` 契約保留。`watch --json` 每個週期輸出一行 JSON，成功為 `state: complete`，部分失敗沿用 `partial_sync` 契約；每行皆附 `time`。遇到 `auth_failed`（含部分同步）時 `watch` 不再重試，輸出該錯誤 JSON 後以非零狀態結束；其他錯誤照常等下個週期。`--help`／`--version` 及明確要求的 raw／snapshot 仍是文字輸出。
 
 ## 郵件
 
@@ -206,7 +206,7 @@ def verify(secret: bytes, headers: dict, raw_body: bytes, tolerance=300) -> bool
     return hmac.compare_digest(expected, sent)
 ```
 
-程序每輪輸出一行 JSON，包含 `state`、`transport`、`baseline`、`cursor`、`new_mail`、`parse_errors` 與 `delivery`，結束時輸出 `stopped`。`--once` 執行一輪查詢與送達嘗試後結束，可能仍有待送事件；以 `delivery.error` 與 `status.mail_webhooks` 的 `pending`／`last_error`／`next_attempt_at` 確認。此命令專注新信；歷史同步、旗標更新與保存週期由 `sync`／一般 `watch`／`prune` 執行，清理快取不移除待送 payload。
+程序每輪輸出一行 JSON，包含 `state`、`transport`、`baseline`、`cursor`、`new_mail`、`parse_errors` 與 `delivery`，結束時輸出 `stopped`。IMAP 連線錯誤輸出 `state: reconnecting`，以 10 秒起倍增至最多 300 秒重連；IMAP LOGIN 被拒時不再重連，輸出 `state: error`、`error.code: auth_failed` 後以非零狀態結束。`--once` 執行一輪查詢與送達嘗試後結束，可能仍有待送事件；以 `delivery.error` 與 `status.mail_webhooks` 的 `pending`／`last_error`／`next_attempt_at` 確認。此命令專注新信；歷史同步、旗標更新與保存週期由 `sync`／一般 `watch`／`prune` 執行，清理快取不移除待送 payload。
 
 ## 行事曆與聯絡人
 

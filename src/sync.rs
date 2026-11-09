@@ -237,13 +237,16 @@ fn finish(
                 kind,
                 count: snapshot.items.len(),
                 error: None,
+                code: None,
             }
         }
         Err(error) => {
+            let code = crate::error::ErrorOutput::from_error(&error).error.code;
             let error = format!("{error:#}");
             SyncResult {
                 kind,
                 count: 0,
+                code: Some(code.to_owned()),
                 error: Some(if password.is_empty() {
                     error
                 } else {

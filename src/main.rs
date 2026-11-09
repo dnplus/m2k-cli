@@ -266,6 +266,7 @@ fn execute(cli: Cli) -> Result<()> {
                     kind: Kind::Contacts,
                     count: result.count,
                     error: None,
+                    code: None,
                 }]
             } else {
                 sync::run(&dir, &kinds(kind))?
@@ -361,11 +362,22 @@ fn kinds(kind: Option<Kind>) -> Vec<Kind> {
 }
 
 fn check_credentials(cfg: &config::Config, pass: &str) -> Result<Option<u16>> {
-    let fallback = provider::mail::verify(cfg, pass)
-        .map_err(|e| anyhow::anyhow!("{}", format!("{e:#}").replace(pass, "[已隱藏]")))?;
+    let redact = |e: anyhow::Error| {
+        let message = format!("{e:#}").replace(pass, "[已隱藏]");
+        if m2k::error::is_auth_failed(&e) {
+            m2k::error::Failure {
+                code: m2k::error::AUTH_FAILED,
+                message,
+                retryable: false,
+            }
+            .into()
+        } else {
+            anyhow::anyhow!("{message}")
+        }
+    };
+    let fallback = provider::mail::verify(cfg, pass).map_err(redact)?;
     for kind in [Kind::Calendar, Kind::Contacts] {
-        provider::dav::verify(cfg, pass, kind)
-            .map_err(|e| anyhow::anyhow!("{}", format!("{e:#}").replace(pass, "[已隱藏]")))?;
+        provider::dav::verify(cfg, pass, kind).map_err(redact)?;
     }
     Ok(fallback)
 }
@@ -401,9 +413,14 @@ fn watch(dir: &Path, kind: Option<Kind>, json: bool) -> Result<()> {
     ctrlc::set_handler(move || signal.store(true, Ordering::Relaxed))?;
     while !stop.load(Ordering::Relaxed) {
         let output = match sync::run_periodic(dir, &kinds(kind)) {
-            Ok(results) if results.iter().any(|result| result.error.is_some()) => Some(
-                m2k::error::ErrorOutput::json(&m2k::error::PartialSync(results).into()),
-            ),
+            Ok(results) if results.iter().any(|result| result.error.is_some()) => {
+                let partial = m2k::error::PartialSync(results).into();
+                if m2k::error::is_auth_failed(&partial) {
+                    return Err(partial);
+                }
+                Some(m2k::error::ErrorOutput::json(&partial))
+            }
+            Err(error) if m2k::error::is_auth_failed(&error) => return Err(error),
             Ok(results) => Some(serde_json::json!({"state":"complete","results":results})),
             Err(error) if json => Some(m2k::error::ErrorOutput::json(&error)),
             Err(error) => {

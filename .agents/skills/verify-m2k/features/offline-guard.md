@@ -25,3 +25,4 @@ Preconditions: baseline.
 
 - This proves the guard, not the online feature. Record the online feature itself as NOT RUN.
 - Without `--json`, errors go to stderr as text; assert the exit code there.
+- `auth_failed` (server rejected the password) needs a live login, so this harness cannot drive it; `tests/auth_failed.rs` covers it against the loopback fixture.

@@ -190,6 +190,7 @@ fn handle(
             let user = text_arg(arg(args, 1, "user")?, literals);
             let password = text_arg(arg(args, 2, "password")?, literals);
             if user != fixture.user || password != fixture.password {
+                fixture.record("imap.login_rejected", json!({"user": user}), None);
                 conn.write(format!(
                     "{tag} NO [AUTHENTICATIONFAILED] invalid credentials\r\n"
                 ))?;

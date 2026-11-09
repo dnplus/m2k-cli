@@ -720,8 +720,8 @@ fn is_auth_or_network(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause.is::<reqwest::Error>()
             || cause
-                .to_string()
-                .contains(&StatusCode::UNAUTHORIZED.to_string())
+                .downcast_ref::<crate::error::Failure>()
+                .is_some_and(|failure| failure.code == crate::error::AUTH_FAILED)
     })
 }
 
@@ -2205,6 +2205,9 @@ fn send(request: RequestBuilder) -> Result<Response> {
     let response = request.send().context("DAV HTTP 請求失敗")?;
     if response.status().is_redirection() {
         bail!("DAV 重新導向已拒絕，避免憑證外洩");
+    }
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err(crate::error::auth_failed("DAV", response.status()).into());
     }
     Ok(response)
 }
