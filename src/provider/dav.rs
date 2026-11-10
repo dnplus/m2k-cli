@@ -13,6 +13,7 @@ use reqwest::{
     Method, StatusCode, Url,
 };
 use roxmltree::{Document, Node};
+use serde::Serialize;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     error::Error as StdError,
@@ -65,6 +66,39 @@ impl DavListing {
         }
         Ok(())
     }
+}
+
+/// An HTTP status the server answered with, kept typed so callers can tell a
+/// 404 from other failures without matching message text.
+#[derive(Debug)]
+pub struct DavStatusError {
+    pub status: StatusCode,
+    operation: String,
+}
+
+impl fmt::Display for DavStatusError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} 回應狀態錯誤：{}", self.operation, self.status)
+    }
+}
+
+impl StdError for DavStatusError {}
+
+/// True when `error` is the server answering 404 Not Found.
+pub fn is_not_found(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<DavStatusError>()
+            .is_some_and(|error| error.status == StatusCode::NOT_FOUND)
+    })
+}
+
+/// A calendar collection the account can read inside someone else's home.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct ReadableCalendar {
+    pub url: String,
+    pub display_name: Option<String>,
+    pub writable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -311,6 +345,67 @@ impl<'a> DavSession<'a> {
             }
         };
         self.fetch_range_on_collection(&collection, start, end, expand)
+    }
+
+    /// Ids (last path segment, decoded) of the principals whose calendars this
+    /// account may act on through a calendar-proxy delegation.
+    ///
+    /// The list is a superset of "who shared a calendar with me": on Mail2000
+    /// it holds every colleague, so each home still has to be probed with
+    /// [`DavSession::readable_calendars`].
+    pub fn delegated_principals(&self, principal_url: &str) -> Result<Vec<String>> {
+        let url = Url::parse(principal_url).context("principal URL 格式錯誤")?;
+        let (status, body) = self.propfind_any_status(&url, "0", DELEGATION_PROPFIND_BODY)?;
+        if status != StatusCode::MULTI_STATUS {
+            return Err(DavStatusError {
+                status,
+                operation: "DAV PROPFIND".to_owned(),
+            }
+            .into());
+        }
+        parse_delegated_principals(&body, &url)
+    }
+
+    /// Calendar collections inside `home_url` that this account can read.
+    /// A home that is missing or forbidden simply has none.
+    pub fn readable_calendars(&self, home_url: &str) -> Result<Vec<ReadableCalendar>> {
+        let url = Url::parse(home_url).context("行事曆 home URL 格式錯誤")?;
+        let (status, body) = self.propfind_any_status(&url, "1", SHARED_HOME_PROPFIND_BODY)?;
+        match status {
+            StatusCode::MULTI_STATUS => parse_readable_calendars(&body, &url),
+            StatusCode::NOT_FOUND | StatusCode::FORBIDDEN => Ok(Vec::new()),
+            status => Err(DavStatusError {
+                status,
+                operation: "DAV PROPFIND".to_owned(),
+            }
+            .into()),
+        }
+    }
+
+    fn propfind_any_status(
+        &self,
+        url: &Url,
+        depth: &str,
+        body: &'static str,
+    ) -> Result<(StatusCode, String)> {
+        let configured = configured_url(self.config, Kind::Calendar)?;
+        let request = checked_request(
+            &self.client,
+            self.config,
+            self.password,
+            &configured,
+            Method::from_bytes(b"PROPFIND").expect("PROPFIND method"),
+            url,
+            DavOperation::Propfind,
+        )?
+        .header("Depth", depth)
+        .header(CONTENT_TYPE, "application/xml; charset=utf-8")
+        .header(ACCEPT, "application/xml, text/xml")
+        .body(body);
+        let response = send(request)?;
+        let status = response.status();
+        let body = response.text().context("DAV PROPFIND 回應讀取失敗")?;
+        Ok((status, body))
     }
 
     pub fn put(
@@ -2223,7 +2318,11 @@ fn require_status(
         .text()
         .with_context(|| format!("{operation} 回應讀取失敗"))?;
     if !accepted.contains(&status) {
-        bail!("{operation} 回應狀態錯誤：{status}");
+        return Err(DavStatusError {
+            status,
+            operation: operation.to_owned(),
+        }
+        .into());
     }
     Ok((headers, body))
 }
@@ -2693,6 +2792,99 @@ fn property_values(properties: &[ical::property::Property], name: &str) -> Vec<S
         .filter_map(|property| property.value.clone())
         .filter(|value| !value.trim().is_empty())
         .collect()
+}
+
+const DELEGATION_PROPFIND_BODY: &str = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<D:propfind xmlns:D=\"DAV:\" xmlns:CS=\"http://calendarserver.org/ns/\"><D:prop><CS:calendar-proxy-write-for/><CS:calendar-proxy-read-for/></D:prop></D:propfind>";
+
+const SHARED_HOME_PROPFIND_BODY: &str = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<D:propfind xmlns:D=\"DAV:\"><D:prop><D:displayname/><D:resourcetype/><D:current-user-privilege-set/></D:prop></D:propfind>";
+
+/// `prop` elements the server answered with 200, ignoring other propstats and
+/// whole-response statuses (an unsupported property is not an error here).
+fn ok_props<'a, 'input>(
+    document: &'a Document<'input>,
+) -> Vec<(Node<'a, 'input>, Node<'a, 'input>)> {
+    document
+        .root_element()
+        .children()
+        .filter(|node| is_element_named(*node, "response"))
+        .flat_map(|response| {
+            response
+                .children()
+                .filter(|node| is_element_named(*node, "propstat"))
+                .filter(|propstat| {
+                    direct_child(*propstat, "status")
+                        .and_then(|status| status_code(&text_content(status)))
+                        == Some(200)
+                })
+                .filter_map(move |propstat| {
+                    direct_child(propstat, "prop").map(|prop| (response, prop))
+                })
+        })
+        .collect()
+}
+
+fn parse_multistatus_document(body: &str) -> Result<Document<'_>> {
+    let document = Document::parse(body).map_err(|error| anyhow!("DAV XML 格式錯誤：{error}"))?;
+    if document.root_element().tag_name().name() != "multistatus" {
+        bail!("DAV 回應缺少 multistatus 根節點");
+    }
+    Ok(document)
+}
+
+fn parse_delegated_principals(body: &str, base: &Url) -> Result<Vec<String>> {
+    let document = parse_multistatus_document(body)?;
+    let props = ok_props(&document)
+        .into_iter()
+        .map(|(_, prop)| prop)
+        .collect::<Vec<_>>();
+    let mut ids = Vec::new();
+    for name in ["calendar-proxy-write-for", "calendar-proxy-read-for"] {
+        for href in property_hrefs(&props, name) {
+            let url = resolve_href(base, &href)?;
+            if let Some(id) = url
+                .path_segments()
+                .and_then(|mut segments| segments.rfind(|segment| !segment.is_empty()))
+                .map(percent_decode)
+            {
+                ids.push(id);
+            }
+        }
+    }
+    Ok(ids)
+}
+
+fn parse_readable_calendars(body: &str, base: &Url) -> Result<Vec<ReadableCalendar>> {
+    let document = parse_multistatus_document(body)?;
+    let mut calendars = Vec::new();
+    for (response, prop) in ok_props(&document) {
+        let is_calendar = direct_child(prop, "resourcetype").is_some_and(|resourcetype| {
+            resourcetype
+                .children()
+                .any(|node| is_element_named(node, "calendar"))
+        });
+        if !is_calendar {
+            continue;
+        }
+        let href = direct_child(response, "href")
+            .map(|node| text_content(node))
+            .filter(|href| !href.trim().is_empty())
+            .ok_or_else(|| anyhow!("DAV response 缺少 href"))?;
+        let url = resolve_href(base, href.trim())?;
+        ensure_same_origin(base, &url)?;
+        let writable = direct_child(prop, "current-user-privilege-set").is_some_and(|set| {
+            set.descendants()
+                .any(|node| is_element_named(node, "write") || is_element_named(node, "all"))
+        });
+        let display_name = direct_child(prop, "displayname")
+            .map(|node| text_content(node).trim().to_owned())
+            .filter(|name| !name.is_empty());
+        calendars.push(ReadableCalendar {
+            url: url.to_string(),
+            display_name,
+            writable,
+        });
+    }
+    Ok(calendars)
 }
 
 fn propfind_body() -> String {

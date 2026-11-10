@@ -16,16 +16,23 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Mutex,
+    },
 };
 use uuid::Uuid;
 
 const DEFAULT_LUNCH_START: u32 = 12 * 60;
 const DEFAULT_LUNCH_END: u32 = 13 * 60;
 const ROOM_QUERY_BATCH_SIZE: usize = 4;
+/// Mail2000 delegates every colleague, so `meeting shared` probes hundreds of
+/// homes; this many requests in flight keeps that to seconds.
+const SHARED_SCAN_WORKERS: usize = 12;
 pub(crate) const MAX_ROOM_SLOT_DAYS: i64 = 31;
 
 #[derive(Debug, Subcommand)]
@@ -34,6 +41,8 @@ pub enum MeetingCommand {
     Resources(ResourcesArgs),
     #[command(about = "讀取自己、同事或會議室的行事曆事件")]
     Events(EventsArgs),
+    #[command(about = "列出已分享行事曆給你的同事（這些人才查得到 free/busy）；預設讀本機快取")]
+    Shared(SharedArgs),
     #[command(about = "查詢一組對象的 free/busy，未知狀態不會當成空檔")]
     FreeBusy(FreeBusyArgs),
     #[command(about = "找共同空檔時段")]
@@ -50,6 +59,17 @@ pub enum MeetingCommand {
     Book(BookArgs),
     #[command(about = "以 METHOD:REPLY 回覆郵件中的會議邀請（接受／拒絕／暫定）")]
     Rsvp(crate::meeting_rsvp::RsvpArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct SharedArgs {
+    #[arg(long, help = "重新向伺服器檢查並更新本機快取；沒有快取時會自動檢查")]
+    pub refresh: bool,
+    #[arg(
+        long,
+        help = "只檢查此部門分支（含子部門）與不在通訊錄快取的委派對象，結果併入快取；可填 path、名稱或 URL"
+    )]
+    pub branch: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -397,6 +417,7 @@ pub fn execute(data_dir: &Path, command: MeetingCommand, json: bool) -> Result<(
     match command {
         MeetingCommand::Resources(args) => execute_resources(data_dir, args, json),
         MeetingCommand::Events(args) => execute_events(data_dir, args, json),
+        MeetingCommand::Shared(args) => execute_shared(data_dir, args, json),
         MeetingCommand::FreeBusy(args) => execute_free_busy(data_dir, args, json),
         MeetingCommand::Slots(args) => execute_slots(data_dir, args, json),
         MeetingCommand::Rooms(args) => execute_rooms(data_dir, args, json),
@@ -866,6 +887,366 @@ fn execute_events(data_dir: &Path, args: EventsArgs, json: bool) -> Result<()> {
         output.events.len()
     );
     emit(&output, &text, json)
+}
+
+/// Colleagues whose calendar the account can actually read, plus how many
+/// delegations were checked to find them. Sharing is the colleague's choice,
+/// so this is the only reliable answer to "whose free/busy can I query".
+#[derive(Debug, Serialize)]
+pub struct SharedCalendars {
+    /// Delegated principals probed (self, `@system` and room domains excluded); 0 when read from cache.
+    pub scanned: usize,
+    pub from_cache: bool,
+    /// Directory branch the probe was limited to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    pub colleagues: Vec<SharedColleague>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SharedColleague {
+    pub email: String,
+    pub name: Option<String>,
+    pub calendars: Vec<provider::dav::ReadableCalendar>,
+    pub checked_at: DateTime<Utc>,
+}
+
+/// 分享是同事的設定，很少變動，而完整檢查要逐一查數百位委派對象；因此不設過期，由 `--refresh` 明確更新。
+const SHARED_CACHE_FILE: &str = "shared_calendars.json";
+
+#[derive(Serialize, Deserialize)]
+struct SharedCache {
+    account: String,
+    /// `false` 表示這份快取只來自尚未與完整結果合併的 `--branch` 掃描，不能當成全公司名單。
+    /// 舊檔沒有這個欄位，視為完整。
+    #[serde(default = "shared_cache_is_complete_by_default")]
+    complete: bool,
+    colleagues: Vec<SharedColleague>,
+}
+
+fn shared_cache_is_complete_by_default() -> bool {
+    true
+}
+
+fn read_shared_cache(data_dir: &Path, account: &str) -> Option<SharedCache> {
+    let bytes = fs::read(data_dir.join(SHARED_CACHE_FILE)).ok()?;
+    let cache = serde_json::from_slice::<SharedCache>(&bytes).ok()?;
+    (cache.account == account).then_some(cache)
+}
+
+fn write_shared_cache(
+    data_dir: &Path,
+    account: &str,
+    colleagues: &[SharedColleague],
+    complete: bool,
+) -> Result<()> {
+    let cache = SharedCache {
+        account: account.to_owned(),
+        complete,
+        colleagues: colleagues.to_vec(),
+    };
+    crate::local_state::write_atomic(
+        &data_dir.join(SHARED_CACHE_FILE),
+        &serde_json::to_vec_pretty(&cache)?,
+    )
+}
+
+/// 分支內的人，加上不在通訊錄快取的人：通訊錄常落後於人事異動，新進同事不在任何分支，不能因此漏查。
+struct BranchScope {
+    path: String,
+    members: BTreeSet<String>,
+    known: BTreeSet<String>,
+}
+
+impl BranchScope {
+    fn load(store: &Store, selector: &str) -> Result<Self> {
+        let nodes = crate::directory::address_book_tree(&store.collections(Kind::Contacts)?, None);
+        let trimmed = selector.trim().trim_matches('/');
+        let node = match nodes.iter().find(|node| node.path == trimmed) {
+            Some(node) => node,
+            None => crate::directory::select_node(&nodes, selector)?,
+        };
+        let prefix = format!("{}/", node.path);
+        let mut scope = Self {
+            path: node.path.clone(),
+            members: BTreeSet::new(),
+            known: BTreeSet::new(),
+        };
+        let items = store.list(Kind::Contacts, None, None, usize::MAX)?;
+        for contact in crate::directory::merge_contact_items(&items, &nodes) {
+            let inside = contact.memberships.iter().any(|membership| {
+                membership.path == node.path || membership.path.starts_with(&prefix)
+            });
+            for email in contact.emails {
+                let email = email.trim().to_lowercase();
+                if inside {
+                    scope.members.insert(email.clone());
+                }
+                scope.known.insert(email);
+            }
+        }
+        Ok(scope)
+    }
+
+    fn includes(&self, email: &str) -> bool {
+        self.members.contains(email) || !self.known.contains(email)
+    }
+}
+
+/// 分支外的人這次沒查；探測失敗也不代表對方停止分享。兩種都沿用上次成功的快取。
+/// 空的行事曆 home 是「沒分享」，不沿用。
+fn merge_previous_colleagues(
+    colleagues: &mut Vec<SharedColleague>,
+    previous: Vec<SharedColleague>,
+    scope: Option<&BranchScope>,
+    failed: &BTreeSet<String>,
+) {
+    colleagues.extend(previous.into_iter().filter(|colleague| {
+        let outside = scope.is_some_and(|scope| !scope.includes(&colleague.email));
+        outside || failed.contains(&colleague.email)
+    }));
+    colleagues.sort_by(|left, right| left.email.cmp(&right.email));
+}
+
+fn execute_shared(data_dir: &Path, args: SharedArgs, json: bool) -> Result<()> {
+    let (config, password) = required_online_or_demo(data_dir)?;
+    let account = config.email.trim().to_lowercase();
+    let cached = read_shared_cache(data_dir, &account);
+    let output = match (args.branch.is_none() && !args.refresh, cached) {
+        (true, Some(cache)) if cache.complete => SharedCalendars {
+            scanned: 0,
+            from_cache: true,
+            branch: None,
+            colleagues: cache.colleagues,
+            warnings: Vec::new(),
+        },
+        (_, cached) => {
+            let previous_complete = cached.as_ref().is_some_and(|cache| cache.complete);
+            let previous = cached.map(|cache| cache.colleagues).unwrap_or_default();
+            let store = Store::open(data_dir)?;
+            match new_dav_session(&config, password.as_deref())? {
+                Some(session) => {
+                    let scope = args
+                        .branch
+                        .as_deref()
+                        .map(|selector| BranchScope::load(&store, selector))
+                        .transpose()?;
+                    if !json {
+                        eprintln!("正在檢查同事分享的行事曆，可能需要數十秒…");
+                    }
+                    let names = contact_names(&store)?;
+                    let (mut output, failed) =
+                        collect_shared(&config, &session, &names, scope.as_ref())?;
+                    merge_previous_colleagues(
+                        &mut output.colleagues,
+                        previous,
+                        scope.as_ref(),
+                        &failed,
+                    );
+                    // 沒有完整快取可併的分支掃描只涵蓋該分支與不在通訊錄的人。
+                    let complete = scope.is_none() || previous_complete;
+                    write_shared_cache(data_dir, &account, &output.colleagues, complete)?;
+                    output
+                }
+                None => SharedCalendars {
+                    scanned: 0,
+                    from_cache: false,
+                    branch: None,
+                    colleagues: Vec::new(),
+                    warnings: vec!["demo 模式不連線 CalDAV，無法列出同事分享的行事曆".to_owned()],
+                },
+            }
+        }
+    };
+    if json {
+        return emit(&output, "", true);
+    }
+    for warning in &output.warnings {
+        eprintln!("警告：{warning}");
+    }
+    println!("{}", shared_text(&output));
+    Ok(())
+}
+
+/// Lowercase email to the best known person name in the local directory cache.
+fn contact_names(store: &Store) -> Result<BTreeMap<String, String>> {
+    let items = store.list(Kind::Contacts, None, None, usize::MAX)?;
+    let mut names = BTreeMap::new();
+    for contact in crate::directory::merge_contact_items(&items, &[]) {
+        let name = contact
+            .structured_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(contact.name.trim());
+        for email in &contact.emails {
+            let email = email.trim().to_lowercase();
+            let local = email.split('@').next().unwrap_or_default();
+            // 沒有 vCard N 時 FN 常只是帳號，不算姓名。
+            if !name.is_empty() && !name.eq_ignore_ascii_case(local) {
+                names.entry(email).or_insert_with(|| name.to_owned());
+            }
+        }
+    }
+    Ok(names)
+}
+
+fn collect_shared(
+    config: &Config,
+    session: &provider::dav::DavSession<'_>,
+    names: &BTreeMap<String, String>,
+    scope: Option<&BranchScope>,
+) -> Result<(SharedCalendars, BTreeSet<String>)> {
+    let profile = SiteProfile::for_config(Some(config))?;
+    let origin = origin(config);
+    let principal = format!(
+        "{}/{}/",
+        profile.caldav_principals_url(&origin),
+        percent_encode_segment(&config.email)
+    );
+    let delegated = session
+        .delegated_principals(&principal)
+        .context("無法讀取行事曆委派清單")?;
+    let own = config.email.trim().to_lowercase();
+    // `@system` 與 `@<網域>`（會議室）是系統 principal，不是同事。
+    let candidates = delegated
+        .into_iter()
+        .filter(|id| !id.starts_with('@') && id.contains('@'))
+        .filter(|id| id.trim().to_lowercase() != own)
+        .map(|id| (id.trim().to_lowercase(), id))
+        .filter(|(email, _)| scope.is_none_or(|scope| scope.includes(email)))
+        .collect::<BTreeMap<_, _>>();
+    let candidates = candidates.into_iter().collect::<Vec<_>>();
+    let calendars_url = profile.caldav_calendars_url(&origin);
+    let results = Mutex::new(Vec::with_capacity(candidates.len()));
+    let next = AtomicUsize::new(0);
+    let rejected = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        for _ in 0..SHARED_SCAN_WORKERS.min(candidates.len()) {
+            scope.spawn(|| loop {
+                if rejected.load(Ordering::Relaxed) {
+                    break;
+                }
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some((email, id)) = candidates.get(index) else {
+                    break;
+                };
+                let home = format!("{calendars_url}/{}/", percent_encode_segment(id));
+                let found = session.readable_calendars(&home);
+                if found.as_ref().is_err_and(crate::error::is_auth_failed) {
+                    rejected.store(true, Ordering::Relaxed);
+                }
+                results
+                    .lock()
+                    .expect("shared scan results lock")
+                    .push((email.clone(), found));
+            });
+        }
+    });
+    let mut results = results.into_inner().expect("shared scan results lock");
+    if let Some(index) = results
+        .iter()
+        .position(|(_, found)| found.as_ref().is_err_and(crate::error::is_auth_failed))
+    {
+        return Err(results.swap_remove(index).1.unwrap_err());
+    }
+    let checked_at = Utc::now();
+    let mut colleagues = Vec::new();
+    let mut warnings = Vec::new();
+    let mut failed = BTreeSet::new();
+    for (email, found) in results {
+        match found {
+            Ok(calendars) if calendars.is_empty() => {}
+            Ok(mut calendars) => {
+                calendars.sort_by(|left, right| left.url.cmp(&right.url));
+                colleagues.push(SharedColleague {
+                    name: names.get(&email).cloned(),
+                    email,
+                    calendars,
+                    checked_at,
+                });
+            }
+            Err(error) => {
+                warnings.push(format!("{email}：{error:#}"));
+                failed.insert(email);
+            }
+        }
+    }
+    colleagues.sort_by(|left, right| left.email.cmp(&right.email));
+    warnings.sort();
+    Ok((
+        SharedCalendars {
+            scanned: candidates.len(),
+            from_cache: false,
+            branch: scope.map(|scope| scope.path.clone()),
+            colleagues,
+            warnings,
+        },
+        failed,
+    ))
+}
+
+fn shared_text(output: &SharedCalendars) -> String {
+    let mut lines = Vec::new();
+    if output.colleagues.is_empty() {
+        lines.push("目前沒有同事分享行事曆給你；請對方先在 Mail2000 分享行事曆。".to_owned());
+    } else {
+        lines.push(format!(
+            "{} 位同事分享行事曆給你（可查 free/busy）",
+            output.colleagues.len()
+        ));
+    }
+    for colleague in &output.colleagues {
+        let calendars = colleague
+            .calendars
+            .iter()
+            .map(|calendar| {
+                format!(
+                    "{}（{}）",
+                    calendar.display_name.as_deref().unwrap_or(&calendar.url),
+                    if calendar.writable {
+                        "可寫入"
+                    } else {
+                        "唯讀"
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("、");
+        lines.push(match &colleague.name {
+            Some(name) => format!("{}  {name}  {calendars}", colleague.email),
+            None => format!("{}  {calendars}", colleague.email),
+        });
+    }
+    let failures = if output.warnings.is_empty() {
+        String::new()
+    } else {
+        format!("，{} 位查詢失敗（見上方警告）", output.warnings.len())
+    };
+    lines.push(if output.from_cache {
+        let oldest = output
+            .colleagues
+            .iter()
+            .map(|colleague| colleague.checked_at)
+            .min()
+            .map(|at| {
+                format!(
+                    "，最早於 {} 檢查",
+                    at.with_timezone(&chrono::Local).format("%Y/%m/%d %H:%M")
+                )
+            })
+            .unwrap_or_default();
+        format!("本機快取{oldest}；要更新請加 --refresh（可配合 --branch 只查部門）。")
+    } else if let Some(branch) = &output.branch {
+        format!(
+            "已檢查 {branch} 分支與不在通訊錄快取的 {} 位委派對象{failures}；其他人沿用快取。",
+            output.scanned
+        )
+    } else {
+        format!("已檢查 {} 位委派對象{failures}。", output.scanned)
+    });
+    lines.join("\n")
 }
 
 fn execute_free_busy(data_dir: &Path, args: FreeBusyArgs, json: bool) -> Result<()> {
@@ -2389,16 +2770,37 @@ fn probe_target(
     let remote_items = match remote_items {
         Ok(items) => items,
         Err(error) => {
+            let unknown = unshared_colleague_reason(config, &target, &error)
+                .unwrap_or_else(|| format!("{error:#}"));
             return Ok(Probe {
                 target,
                 events: Vec::new(),
-                unknown: Some(format!("{error:#}")),
+                unknown: Some(unknown),
                 items: Vec::new(),
                 complete: false,
             });
         }
     };
     Ok(probe_from_items(target, remote_items, range))
+}
+
+/// A colleague's calendar answering 404 means they never shared it with this
+/// account, which is a fact about them rather than a server fault.
+fn unshared_colleague_reason(
+    config: &Config,
+    target: &Target,
+    error: &anyhow::Error,
+) -> Option<String> {
+    if !provider::dav::is_not_found(error) || target.label.eq_ignore_ascii_case(&config.email) {
+        return None;
+    }
+    let profile = SiteProfile::for_config(Some(config)).ok()?;
+    (target.calendar_url == user_calendar_url(config, &profile, &target.label)).then(|| {
+        format!(
+            "{} 尚未分享行事曆給你（404）；請對方先分享，或用 m2k meeting shared 查看哪些同事已分享",
+            target.label
+        )
+    })
 }
 
 fn probe_from_items(target: Target, items: Vec<Item>, range: &TimeRange) -> Probe {

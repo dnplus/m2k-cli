@@ -1,6 +1,6 @@
 use chrono::Utc;
 use m2k::directory::{address_book_tree, merge_contact_items};
-use m2k::directory_chart::{build, render_markdown, render_mermaid, OrgChart};
+use m2k::directory_chart::{build, render_markdown, render_mermaid, ManagerBasis, OrgChart};
 use m2k::model::{Collection, Item, Kind, Snapshot};
 use m2k::store::Store;
 use std::process::Command;
@@ -154,15 +154,18 @@ fn branch_keeps_only_that_subtree() {
 }
 
 #[test]
-fn outputs_say_there_are_no_reporting_lines_and_draw_department_edges() {
+fn outputs_explain_managers_are_inferred_and_draw_department_edges() {
     let (collections, items) = directory();
     let chart = chart(&collections, &items, None);
     let json = serde_json::to_value(&chart).unwrap();
-    assert!(json["reporting_note"]
-        .as_str()
-        .unwrap()
-        .contains("不含匯報線"));
-    assert!(render_markdown(&chart).contains("不含匯報線"));
+    let note = json["reporting_note"].as_str().unwrap();
+    assert!(
+        note.contains("推斷") && note.contains("最底層部門"),
+        "{note}"
+    );
+    assert!(render_markdown(&chart).contains("- 主管：通訊錄 vCard 沒有主管欄位"));
+    // 這份資料沒有上層主管往下列的形狀，不能硬猜出主管。
+    assert!(!render_markdown(&chart).contains(" · 主管："));
     let mermaid = render_mermaid(&chart);
     assert!(mermaid.starts_with("flowchart TD\n"));
     assert!(mermaid.contains("d0[\"ACME<br/>1 人\"]"));
@@ -261,4 +264,120 @@ fn members_show_the_chinese_full_name_not_just_the_account() {
         "{markdown}"
     );
     assert!(!markdown.contains("ming_wang@example.test"));
+}
+
+/// Mail2000 的形狀：BU 只有處長與秘書，處長也列在每個下層部門；
+/// SVC 有自己的主管並往下列；OPS 本層只有處長（兼任）。
+fn mail2000_bu() -> (Vec<Collection>, Vec<Item>) {
+    let paths = [
+        "CO",
+        "CO/BU",
+        "CO/BU/SALES",
+        "CO/BU/SVC",
+        "CO/BU/SVC/SVC1",
+        "CO/BU/SVC/SVC2",
+        "CO/BU/OPS",
+        "CO/BU/OPS/OPS1",
+    ];
+    let members: &[(&str, &[&str])] = &[
+        (
+            "boss",
+            &[
+                "CO/BU",
+                "CO/BU/SALES",
+                "CO/BU/SVC",
+                "CO/BU/SVC/SVC1",
+                "CO/BU/SVC/SVC2",
+                "CO/BU/OPS",
+                "CO/BU/OPS/OPS1",
+            ],
+        ),
+        ("secretary", &["CO/BU"]),
+        (
+            "svc_head",
+            &["CO/BU/SVC", "CO/BU/SVC/SVC1", "CO/BU/SVC/SVC2"],
+        ),
+        ("svc_assistant", &["CO/BU/SVC"]),
+        ("svc1_lead", &["CO/BU/SVC/SVC1"]),
+        ("svc1_eng", &["CO/BU/SVC/SVC1"]),
+        ("sales_rep", &["CO/BU/SALES"]),
+        ("ops_eng", &["CO/BU/OPS/OPS1"]),
+    ];
+    let mut items = Vec::new();
+    for (uid, departments) in members {
+        for path in ["CO"].iter().chain(departments.iter()) {
+            items.push(contact(&format!("{}", items.len()), path, uid, uid, ""));
+        }
+    }
+    (paths.into_iter().map(collection).collect(), items)
+}
+
+fn find<'a>(
+    departments: &'a [m2k::directory_chart::Department],
+    path: &str,
+) -> Option<&'a m2k::directory_chart::Department> {
+    departments.iter().find_map(|department| {
+        if department.path == path {
+            Some(department)
+        } else {
+            find(&department.children, path)
+        }
+    })
+}
+
+fn manager(chart: &OrgChart, path: &str) -> Option<(String, ManagerBasis)> {
+    find(&chart.departments, path)
+        .unwrap_or_else(|| panic!("missing {path}"))
+        .manager
+        .as_ref()
+        .map(|manager| (manager.name.clone(), manager.basis))
+}
+
+#[test]
+fn managers_are_inferred_from_heads_listed_in_every_sub_department() {
+    // 代理程式要知道該找誰核准、誰是誰的主管；Mail2000 只在結構裡留下這個線索。
+    let (collections, items) = mail2000_bu();
+    let chart = chart(&collections, &items, None);
+    let direct = |name: &str| Some((name.to_owned(), ManagerBasis::Direct));
+    let acting = |name: &str| Some((name.to_owned(), ManagerBasis::Acting));
+    // 秘書只在 BU 本層，不是主管。
+    assert_eq!(manager(&chart, "CO/BU"), direct("boss"));
+    // 處長出現在 SVC 不代表他是 SVC 主管：上層主管被排除，SVC 自己往下列的人才是。
+    assert_eq!(manager(&chart, "CO/BU/SVC"), direct("svc_head"));
+    // OPS 本層只有處長：由處長兼任，標成 acting 而不是 direct。
+    assert_eq!(manager(&chart, "CO/BU/OPS"), acting("boss"));
+    // OPS1 只有工程師，主管與成員在結構上無從區分，寧可不標也不猜。
+    assert_eq!(manager(&chart, "CO/BU/OPS/OPS1"), None);
+    assert_eq!(manager(&chart, "CO/BU/SVC/SVC1"), None);
+    // SVC2 只有上層的兩位主管，沒有自己的人：確定由 SVC 主管兼任。
+    assert_eq!(manager(&chart, "CO/BU/SVC/SVC2"), acting("svc_head"));
+    // SALES 雖然只有一位自己的人，最底層仍無法確認他是主管。
+    assert_eq!(manager(&chart, "CO/BU/SALES"), None);
+    assert_eq!(manager(&chart, "CO"), None);
+
+    let markdown = render_markdown(&chart);
+    assert!(
+        markdown.contains("**SVC** `CO/BU/SVC`（3 人） · 主管：svc_head\n"),
+        "{markdown}"
+    );
+    assert!(
+        markdown.contains("**OPS** `CO/BU/OPS`（1 人） · 主管：boss（兼任）\n"),
+        "{markdown}"
+    );
+    let json = serde_json::to_value(&chart).unwrap();
+    let ops = &json["departments"][0]["children"][0]["children"][0];
+    assert_eq!(ops["path"], "CO/BU/OPS");
+    assert_eq!(ops["manager"]["basis"], "acting");
+}
+
+#[test]
+fn branch_keeps_managers_inferred_from_the_whole_tree() {
+    // 只看 OPS 分支時，處長在分支內看起來像「本層成員且列在所有子部門」；
+    // 若只在分支內推斷，會把兼任誤標成 OPS 的直屬主管。
+    let (collections, items) = mail2000_bu();
+    let ops = chart(&collections, &items, Some("CO/BU/OPS"));
+    assert_eq!(
+        manager(&ops, "CO/BU/OPS"),
+        Some(("boss".to_owned(), ManagerBasis::Acting))
+    );
 }
