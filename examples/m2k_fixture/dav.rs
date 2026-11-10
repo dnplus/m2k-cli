@@ -313,6 +313,7 @@ struct ReportQuery {
     hrefs: Option<Vec<String>>,
     time_range: Option<(DateTime<Utc>, DateTime<Utc>)>,
     email: Option<String>,
+    uid: Option<String>,
     with_data: bool,
 }
 
@@ -344,12 +345,20 @@ fn parse_report(body: &str) -> Option<ReportQuery> {
                 .find(|child| child.is_element() && child.tag_name().name() == "text-match")
         })
         .and_then(|node| node.text().map(|t| t.trim().to_lowercase()));
+    let uid = named("prop-filter")
+        .find(|node| node.attribute("name") == Some("UID"))
+        .and_then(|node| {
+            node.children()
+                .find(|child| child.is_element() && child.tag_name().name() == "text-match")
+        })
+        .and_then(|node| node.text().map(|t| t.trim().to_owned()));
     let with_data =
         named("calendar-data").next().is_some() || named("address-data").next().is_some();
     Some(ReportQuery {
         hrefs,
         time_range,
         email,
+        uid,
         with_data,
     })
 }
@@ -411,6 +420,14 @@ fn report(fixture: &Fixture, request: &Request, key: &str) -> Response {
             (query.time_range, event_range(data))
         {
             if !(event_start < end && start < event_end) {
+                continue;
+            }
+        }
+        if let Some(uid) = &query.uid {
+            let matches = data
+                .lines()
+                .any(|line| line.trim_end_matches('\r').strip_prefix("UID:") == Some(uid.as_str()));
+            if !matches {
                 continue;
             }
         }

@@ -709,3 +709,71 @@ fn percent_encoded_at_hrefs_stay_inside_discovered_collection() {
     assert!(requests[1].starts_with("REPORT /cal/user"));
     assert!(requests[1].contains("example.test/default/ HTTP/1.1"));
 }
+
+fn ics_response(etag: Option<&'static str>) -> ResponseSpec {
+    let mut headers = vec![("Content-Type", "text/calendar; charset=utf-8")];
+    if let Some(etag) = etag {
+        headers.push(("ETag", etag));
+    }
+    ResponseSpec {
+        status: "200 OK",
+        body: "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:room-copy@m2k\r\nDTSTART:20261120T100000Z\r\nDTEND:20261120T110000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n".to_owned(),
+        headers,
+    }
+}
+
+#[test]
+fn live_delete_fetches_etag_then_reports_412_without_retrying() {
+    // 會議室副本不在本機：先 live GET 取 ETag，DELETE 必帶 If-Match；
+    // 中間被別人改過就回 412，交給呼叫端回報，不能改成無條件刪除或重試。
+    let (address, handle) = spawn_server(vec![
+        ics_response(Some("\"v7\"")),
+        response("412 Precondition Failed", ""),
+    ]);
+    let config = config(address, "/cal/user/default/");
+    let url = format!("http://{address}/cal/room/default/room-copy@m2k.ics");
+    let outcome = dav::delete_resource(&config, "secret", Kind::Calendar, &url, None)
+        .expect("412 is an outcome, not an error");
+    assert_eq!(outcome, dav::DeleteOutcome::PreconditionFailed);
+    let requests = handle.join().expect("server");
+    assert_eq!(requests.len(), 2, "exactly one GET and one DELETE");
+    assert!(requests[0].starts_with("GET /cal/room/default/room-copy@m2k.ics "));
+    assert!(requests[1].starts_with("DELETE /cal/room/default/room-copy@m2k.ics "));
+    assert!(
+        request_contains(&requests[1], "if-match: \"v7\""),
+        "{}",
+        requests[1]
+    );
+}
+
+#[test]
+fn live_delete_reports_missing_resources_and_refuses_unconditional_delete() {
+    let (address, handle) = spawn_server(vec![response("404 Not Found", "")]);
+    let settings = config(address, "/cal/user/default/");
+    let url = format!("http://{address}/cal/room/default/gone.ics");
+    assert_eq!(
+        dav::delete_resource(&settings, "secret", Kind::Calendar, &url, None).unwrap(),
+        dav::DeleteOutcome::NotFound
+    );
+    assert_eq!(handle.join().unwrap().len(), 1, "no DELETE after 404");
+
+    // 伺服器沒給 ETag 就不刪：沒有 If-Match 的 DELETE 可能蓋掉別人剛改的版本。
+    let (address, handle) = spawn_server(vec![ics_response(None)]);
+    let settings = config(address, "/cal/user/default/");
+    let url = format!("http://{address}/cal/room/default/no-etag.ics");
+    let error = dav::delete_resource(&settings, "secret", Kind::Calendar, &url, None)
+        .expect_err("missing ETag must refuse");
+    assert!(format!("{error:#}").contains("ETag"), "{error:#}");
+    assert_eq!(handle.join().unwrap().len(), 1, "no DELETE without ETag");
+
+    // collection URL 不是單一資源，連請求都不送。
+    let error = dav::delete_resource(
+        &settings,
+        "secret",
+        Kind::Calendar,
+        &format!("http://{address}/cal/room/default/"),
+        None,
+    )
+    .expect_err("collection URL must be refused");
+    assert!(format!("{error:#}").contains("collection"), "{error:#}");
+}

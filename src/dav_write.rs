@@ -4,7 +4,10 @@
 use crate::{
     config::{self, Config},
     model::{Item, Kind},
-    provider::{self, dav::RemoteWritePendingReconcile},
+    provider::{
+        self,
+        dav::{DeleteOutcome, RemoteWritePendingReconcile},
+    },
     store::Store,
     sync,
 };
@@ -78,6 +81,35 @@ pub fn delete(dir: &Path, base: impl FnOnce() -> Result<Item>) -> Result<Item> {
     provider::dav::delete(&cfg, &pass, &base)?;
     Store::open(dir)?.remove(&base.id)?;
     Ok(base)
+}
+
+/// 本機沒有的資源（例如會議室 collection 裡的副本）不經快取，直接 live 刪除：
+/// 先 live GET 取 ETag，再以 `If-Match` DELETE，不自動重試；成功後清掉指向同一 href 的快取。
+pub fn delete_remote(dir: &Path, kind: Kind, url: &str) -> Result<()> {
+    let _lock = sync::lock(dir)?;
+    let (cfg, pass) = online(dir)?;
+    match provider::dav::delete_resource(&cfg, &pass, kind, url, None)? {
+        DeleteOutcome::Deleted => {}
+        DeleteOutcome::NotFound => {
+            return Err(crate::error::Failure {
+                code: "not_found",
+                message: format!("本機與遠端都找不到資源：{url}"),
+                retryable: false,
+            }
+            .into())
+        }
+        DeleteOutcome::PreconditionFailed => {
+            bail!("412：資源在取得 ETag 後已被修改，未刪除；請重新確認後再處理")
+        }
+    }
+    let mut store = Store::open(dir)?;
+    let target = crate::dav_url::identity(url);
+    for item in store.list(kind, None, None, usize::MAX)? {
+        if crate::dav_url::identity(&item.remote_id) == target {
+            store.remove(&item.id)?;
+        }
+    }
+    Ok(())
 }
 
 fn persist(dir: &Path, item: &Item) -> Result<()> {

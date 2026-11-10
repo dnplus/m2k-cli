@@ -78,6 +78,12 @@ impl ErrorOutput {
                 }
             }
         }
+        if let Some(cancel) = error.downcast_ref::<crate::meeting_cancel::CancelIncomplete>() {
+            let report = serde_json::to_value(&cancel.0).expect("serializable cancel report");
+            for (key, value) in report.as_object().expect("report is an object") {
+                output[key] = value.clone();
+            }
+        }
         if let Some(partial) = error.downcast_ref::<PartialSync>() {
             output["state"] = "partial".into();
             output["results"] =
@@ -101,6 +107,16 @@ impl ErrorOutput {
             .is_some()
         {
             ("doctor_failed", false)
+        } else if let Some(cancel) = error.downcast_ref::<crate::meeting_cancel::CancelIncomplete>()
+        {
+            (
+                if cancel.0.state == "not_found" {
+                    "not_found"
+                } else {
+                    "cancel_incomplete"
+                },
+                false,
+            )
         } else if let Some(failure) = error.downcast_ref::<Failure>() {
             (failure.code, failure.retryable)
         } else if let Some(network) = error.downcast_ref::<reqwest::Error>() {

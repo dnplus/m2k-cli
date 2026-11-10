@@ -232,7 +232,7 @@ m2k contacts export CONTACT_ID --output exported.vcf
 
 `calendar create` 可用 `--file` 傳入完整 ICS，或用 `--title --start --end [--location --description --all-day]` 欄位建立個人事件（不帶 METHOD／ORGANIZER）。`--start`／`--end` 以台北時間解讀，與找會議室相同：`明天 14:00`、`下週一 下午兩點`、`2026-10-22 09:30` 或 RFC3339；`--end` 只寫時刻時沿用開始日期。全天事件的 `--end` 是最後一天（含），省略則為單日。`calendar update ID` 給欄位時只改指定部分，保留原 UID 與其他屬性（ATTENDEE、VALARM、X- 屬性等），SEQUENCE 有就加一，沒有而改了時間則補 `SEQUENCE:1`；只改 `--start` 時保留原長度（原本用 DURATION 的事件也一樣，DURATION 無法解析時拒絕改時間），`--location ''`／`--description ''` 移除該欄位，`--all-day=false` 搭配 `--start` 改回定時事件。欄位更新會拒絕重複事件（RRULE／RDATE／EXDATE／RECURRENCE-ID 或多個 VEVENT）、別人邀請的事件（ORGANIZER 不是自己）、有自己以外 ATTENDEE 的會議（例如 `meeting book` 建立、同時在會議室行事曆的那份，只改自己這份會留下會議室預約且與會者收不到通知，請改用 `meeting` 流程），以及會議室或他人的行事曆；欄位建立的 `--collection` 也只接受自己的行事曆。這些情況仍可用 `--file` 明確處理整份 ICS。`--file` 的錯誤順序與以前相同：先檢查 `sync.lock` 與帳號（展示資料、密碼），再讀檔。
 
-原始 ICS／VCF 完整保存。建立使用 `If-None-Match: *`，更新與刪除使用 ETag `If-Match`，避免蓋掉伺服器上的新版本。`calendar delete ID` 與 `contacts delete ID` 會刪除遠端資料。檔案輸出不覆寫既有檔案。
+原始 ICS／VCF 完整保存。建立使用 `If-None-Match: *`，更新與刪除使用 ETag `If-Match`，避免蓋掉伺服器上的新版本。`calendar delete ID` 與 `contacts delete ID` 會刪除遠端資料。`calendar delete` 給的是本機沒有的資源網址（例如會議室行事曆裡的副本）時，改為 live 刪除：先 GET 取得目前 ETag，再以 `If-Match` DELETE，不重試；遠端也不存在時回 `not_found`。檔案輸出不覆寫既有檔案。
 
 若 PUT 已接受，但無法取得新 ETag 或保存本機快取，結果會包含遠端資源網址並要求重新同步；`--json` 回傳 `partial` receipt，程序以非零狀態結束。此時先確認遠端現況，不要直接重新建立事件。
 
@@ -322,6 +322,8 @@ m2k meeting review --attendee colleague@example.com --room ROOM_NAME \
   --start 2026-10-07T14:00:00+08:00 --end 2026-10-07T15:00:00+08:00
 m2k meeting book --file invite.ics --room ROOM_NAME --dry-run
 m2k meeting book --file invite.ics --room ROOM_NAME
+m2k meeting cancel UID --dry-run
+m2k meeting cancel UID --room ROOM_NAME
 m2k meeting invite --file invite.ics --send
 m2k meeting rsvp MAIL_ID --response accept --dry-run
 m2k meeting rsvp MAIL_ID --response decline --comment '那天出差'
@@ -332,6 +334,8 @@ m2k meeting rsvp MAIL_ID --response decline --comment '那天出差'
 `meeting shared` 列出哪些同事已把行事曆分享給你，只有這些人查得到 free/busy、共同空檔與行程。Mail2000 的委派清單包含全公司，不代表對方有分享，所以 m2k 讀自己的委派清單後，逐一 PROPFIND 每位同事的行事曆 home（12 路並行，數百人約數秒到數十秒），只留下真的有可讀行事曆的人；自己、`@system` 與會議室網域不算同事。輸出每人一筆：`email`、`name`（本機通訊錄快取 vCard `N` 的全名，未同步則為 null）、`calendars`（`url`、`display_name`、`writable`），依 email 排序，另有 `scanned`（檢查的委派對象數）與 `warnings`；單一同事查詢失敗只列入 `warnings`，不中斷整個指令。文字輸出開頭是「N 位同事分享行事曆給你（可查 free/busy）」。`free-busy`／`slots`／`book` 查到沒分享的同事（404）時狀態維持 `unknown`，理由會說明對方尚未分享並指向 `meeting shared`，絕不當成空檔。展示資料沒有伺服器可查，回傳空清單與一則警告。結果存在資料目錄的 `shared_calendars.json`：分享很少變動，快取不設過期，之後直接讀快取（`from_cache` 為 true，每人附 `checked_at`），`--refresh` 才重新檢查；換帳號不沿用。`--refresh --branch PATH` 只檢查該部門分支（含子部門）加上不在通訊錄快取的委派對象（通訊錄常缺新進同事），結果併入快取，分支外的人沿用舊結果；平常只約自己 BU 時可快數倍。
 
 個人與房間的兩次 DAV PUT 無法形成跨伺服器交易，因此會回報逐一成功、失敗及補救資訊。預約行事曆與寄送邀請是兩個明確動作；SMTP 使用 `text/calendar; method=REQUEST`。收到的邀請用 `meeting rsvp MAIL_ID --response accept|decline|tentative` 回覆：從郵件的 `text/calendar`（`METHOD:REQUEST`，ICS 沒寫時看 Content-Type 的 `method=`）產生 RFC 5546 `METHOD:REPLY`，保留原 UID、SEQUENCE、ORGANIZER 與 RECURRENCE-ID，ATTENDEE 只放自己並帶 PARTSTAT，以 `text/calendar; method=REPLY` 寄給主辦人。`--dry-run` 只輸出 ICS 與收件者；自己不在 ATTENDEE、自己是主辦人、或 METHOD 不是 REQUEST 時明確報錯且不寄。寄信不自動重試；展示資料拒絕實際寄送。RSVP 不修改自己行事曆裡的 PARTSTAT（輸出 `calendar_updated: false`），需要時另用 `calendar update`。
+
+取消預約用 `meeting cancel UID`（`meeting book` 輸出的 `uid`）。book 在自己與會議室行事曆各寫一份同 UID 的副本，所以 cancel 不靠本機快取：live 對自己與每間會議室行事曆做 CalDAV `calendar-query`（UID filter）找出所有副本，逐筆以 ETag `If-Match` 刪除，並逐筆回報 `deleted`／`not_found`／`precondition_failed`（412，副本在查詢後被改過）／`error`。省略 `--room`／`--url` 時檢查所有會議室；任何行事曆查不到時一份都不刪（`incomplete`），避免只刪掉自己那份而讓會議室副本失聯。副本主辦人不是自己時整筆拒絕。`--dry-run` 只列出會刪的副本。預設不寄信；`--notify-attendees` 才在全部刪除成功後以 `text/calendar; method=CANCEL` 寄給與會者（不含自己與會議室）。未完成（`not_found`／`partial`／`incomplete`）時以非零結束，`--json` 仍帶完整逐筆結果。
 
 若個人行事曆已成功、房間寫入失敗，先依結果確認現況，再使用同一份 ICS 與 `meeting book --file invite.ics --room ROOM_NAME --target room` 補寫；不會重新建立個人事件。
 

@@ -21,6 +21,7 @@ pub mod mail_reply;
 pub mod mail_webhook;
 pub mod mail_workflow;
 pub mod meeting;
+pub mod meeting_cancel;
 pub mod meeting_draft;
 pub mod meeting_rsvp;
 pub mod model;
