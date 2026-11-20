@@ -111,7 +111,10 @@ pub fn save_draft(
         ("book".into(), book.clone()),
         ("repair_room".into(), format!("{book} --target room")),
         ("check_invitation".into(), format!("{invite} --dry-run")),
-        ("send_invitation".into(), format!("{invite} --send")),
+        (
+            "create_invitation_draft".into(),
+            format!("{prefix} mail draft invite --file {file}"),
+        ),
     ]);
     let manifest = folder.join("draft.json");
     let draft = Draft {

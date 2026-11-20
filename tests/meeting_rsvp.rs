@@ -346,7 +346,7 @@ fn cli_dry_run_works_offline_but_demo_refuses_to_send() {
     assert!(refused["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("展示資料不提供實際寄信"));
+        .contains("已停用直接寄信"));
 
     let (status, plain) = m2k(
         temp.path(),

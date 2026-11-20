@@ -1,7 +1,7 @@
 use m2k::{
     config::Config,
     model::{Item, Kind},
-    provider::mail::{attachment, forward, raw_bytes, send_invite},
+    provider::mail::{attachment, raw_bytes},
 };
 
 fn item(raw: &str) -> Item {
@@ -119,7 +119,11 @@ fn invite_rejects_non_request_before_network() {
         "END:VEVENT\r\n",
         "END:VCALENDAR\r\n",
     );
-    let error = send_invite(&config, "password", ics).expect_err("publish must be rejected");
+    let dir = tempfile::tempdir().unwrap();
+    m2k::config::save(dir.path(), &config).unwrap();
+    let file = dir.path().join("invite.ics");
+    std::fs::write(&file, ics).unwrap();
+    let error = m2k::mail_draft::invite(dir.path(), &file).expect_err("publish must be rejected");
     assert!(error.to_string().contains("REQUEST"));
 }
 
@@ -137,9 +141,15 @@ fn invite_builds_request_before_transport_validation() {
         "END:VEVENT\r\n",
         "END:VCALENDAR\r\n",
     );
-    let error =
-        send_invite(&config, "password", ics).expect_err("invalid SMTP port should stop transport");
-    assert!(error.to_string().contains("SMTP"));
+    let dir = tempfile::tempdir().unwrap();
+    m2k::config::save(dir.path(), &config).unwrap();
+    let file = dir.path().join("invite.ics");
+    std::fs::write(&file, ics).unwrap();
+    let id = m2k::mail_draft::invite(dir.path(), &file).expect("draft needs no transport");
+    assert_eq!(
+        m2k::mail_draft::show(dir.path(), &id).unwrap().state,
+        "draft"
+    );
 }
 
 #[test]
@@ -147,13 +157,17 @@ fn forward_rejects_non_mail_before_network() {
     let config = Config::new("user@example.com".into(), "mail.example.test").unwrap();
     let mut calendar = item("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n");
     calendar.kind = Kind::Calendar;
-    let error = forward(
-        &config,
-        "password",
-        &calendar,
+    let dir = tempfile::tempdir().unwrap();
+    m2k::config::save(dir.path(), &config).unwrap();
+    let mut store = m2k::store::Store::open(dir.path()).unwrap();
+    store.ensure_account(&config).unwrap();
+    store.upsert(&calendar).unwrap();
+    let error = m2k::mail_action::draft_forward(
+        dir.path(),
+        &calendar.id,
         &["guest@example.com".into()],
-        "",
+        || Ok(String::new()),
     )
-    .expect_err("calendar cannot be forwarded as mail");
-    assert!(error.to_string().contains("不是郵件"));
+    .unwrap_err();
+    assert!(error.to_string().contains("資料類型不符"));
 }

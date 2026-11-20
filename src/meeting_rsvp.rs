@@ -93,6 +93,7 @@ pub struct RsvpOutput {
     pub dry_run: bool,
     pub sent: bool,
     pub message_id: Option<String>,
+    pub draft_id: Option<String>,
     pub calendar_updated: bool,
     #[serde(flatten)]
     pub reply: RsvpReply,
@@ -120,27 +121,31 @@ pub fn execute(data_dir: &Path, args: RsvpArgs, json: bool) -> Result<()> {
     )?;
     if json {
         println!("{}", serde_json::to_string_pretty(&output)?);
-    } else if output.dry_run {
+    } else {
         println!("預覽 METHOD:REPLY（{}），未寄送。", output.reply.partstat);
         println!("收件者：{}", output.to);
         println!("主旨：{}", output.subject);
         println!();
         print!("{}", output.reply.ics);
-    } else {
-        println!(
-            "已寄送 METHOD:REPLY（{}）給 {}；未修改本機或伺服器行事曆。",
-            output.reply.partstat, output.to
-        );
-        if let Some(id) = &output.message_id {
-            println!("Message-ID：{id}");
-        }
     }
     Ok(())
 }
 
-/// `meeting rsvp` without the printing, shared by the CLI and the TUI. The
-/// send is attempted once; it never touches a calendar.
+/// 舊 RSVP 入口只保留 dry-run；直寄一律拒絕。
 pub fn respond(
+    data_dir: &Path,
+    id: &str,
+    response: RsvpResponse,
+    comment: Option<&str>,
+    dry_run: bool,
+) -> Result<RsvpOutput> {
+    if !dry_run {
+        bail!(crate::mail_draft::MIGRATION);
+    }
+    draft_response(data_dir, id, response, comment, true)
+}
+
+pub fn draft_response(
     data_dir: &Path,
     id: &str,
     response: RsvpResponse,
@@ -159,7 +164,6 @@ pub fn respond(
     if item.kind != Kind::Mail {
         bail!("資料類型不符：{}", item.kind);
     }
-    let mut password = None;
     let mut raw = provider::mail::raw_bytes(&item)?;
     if raw.is_empty() {
         if demo {
@@ -168,7 +172,6 @@ pub fn respond(
         let secret = config::password(&config)?;
         item = provider::mail::fetch_item(&config, &secret, &item)?;
         raw = provider::mail::raw_bytes(&item)?;
-        password = Some(secret);
     }
     let invite = invite_from_mail(&raw)?;
     let reply = build_rsvp_reply(
@@ -180,12 +183,8 @@ pub fn respond(
         Utc::now(),
     )?;
     let subject = format!("{}：{}", response.label(), reply.summary);
-    let mut message_id = None;
+    let mut draft_id = None;
     if !dry_run {
-        let password = match password {
-            Some(password) => password,
-            None => config::password(&config)?,
-        };
         let parent = mailparse::parse_mail(&raw)
             .ok()
             .and_then(|mail| mail.headers.get_first_value("Message-ID"));
@@ -202,16 +201,20 @@ pub fn respond(
                 body.push('\n');
             }
         }
-        message_id = Some(provider::mail::send_calendar_reply(
+        draft_id = Some(crate::mail_draft::save(
+            data_dir,
             &config,
-            &password,
-            &CalendarReply {
-                to: &reply.organizer,
-                subject: &subject,
-                body: &body,
-                ics: &reply.ics,
-                in_reply_to: parent.as_deref(),
-            },
+            "rsvp",
+            provider::mail::build_calendar_reply(
+                &config,
+                &CalendarReply {
+                    to: &reply.organizer,
+                    subject: &subject,
+                    body: &body,
+                    ics: &reply.ics,
+                    in_reply_to: parent.as_deref(),
+                },
+            )?,
         )?);
     }
     Ok(RsvpOutput {
@@ -220,8 +223,9 @@ pub fn respond(
         to: reply.organizer.clone(),
         subject,
         dry_run,
-        sent: message_id.is_some(),
-        message_id,
+        sent: false,
+        message_id: None,
+        draft_id,
         calendar_updated: false,
         reply,
     })

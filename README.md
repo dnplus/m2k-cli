@@ -135,9 +135,11 @@ m2k mail thread --id MESSAGE_ID
 m2k mail thread --id MESSAGE_ID --full
 m2k mail graph --days 14
 m2k --json mail graph --person alice --days 30
-m2k mail reply MESSAGE_ID --body-file reply.txt
-m2k mail forward MESSAGE_ID --to colleague@example.com --body-file note.txt
-m2k mail send --to colleague@example.com --subject '進度' --body-file body.txt --attach report.pdf
+m2k mail draft reply MESSAGE_ID --body-file reply.txt
+m2k mail draft forward MESSAGE_ID --to colleague@example.com --body-file note.txt
+m2k mail draft create --to colleague@example.com --subject '進度' --body-file body.txt --attach report.pdf
+m2k mail draft show DRAFT_ID
+m2k mail send DRAFT_ID
 m2k mail flag MESSAGE_ID --flag seen
 m2k mail flag MESSAGE_ID --flag flagged --clear
 m2k mail move MESSAGE_ID --folder Archive
@@ -168,6 +170,18 @@ CLI 的郵件／行事曆／聯絡人列表採固定欄寬單行，長欄位以 
 郵件保存日期優先採伺服器的 `INTERNALDATE`，避免新收到但 `Date` header 很舊的郵件被立即清除。
 
 郵件串與批次清理請用 `m2k mail thread --help`、`m2k mail cleanup-preview --help`、`m2k mail cleanup-execute --help`。清理先建立綁定帳號、條件及精確 UID 集合的簽章預覽；執行會重新確認伺服器狀態及預覽效期，變動範圍漂移會拒絕執行。
+
+### 寄送草稿與舊指令遷移
+
+所有寄信必須先建立草稿；只有 `mail send DRAFT_ID` 會提交 SMTP。`mail draft create/reply/forward/invite/rsvp` 回傳 `draft_id`、`sent: false`，建立與 `mail draft show ID` 預覽均不連 SMTP。RSVP 的 `--dry-run` 只預覽，不建立草稿。TUI 確認也只建立草稿，狀態列提供 `mail send ID`。
+
+草稿保存在 `<data-dir>/outgoing-drafts/<UUID>/manifest.json`（Unix 目錄 0700、檔案 0600），包含固定 Message-ID、帳號與 SMTP 端點綁定、封套、完整 MIME、附件快照、SHA-256 及狀態。預覽的 `parts` 顯示解碼正文、ICS 與附件資訊，`mime_base64` 為實際寄送的完整位元組。附件原檔變動不影響草稿。此版沒有就地編輯命令：修改後重新建立新 ID；既有 TUI 文字草稿及找房 ICS 仍須明確匯入新流程。
+
+舊 `mail send --to ...`、`mail reply`、`mail forward`、`meeting invite --send`、非 dry-run `meeting rsvp`、`meeting cancel --notify-attendees` 直寄皆非零退出，並提示草稿流程。`mail send ID` 不接受任何覆蓋內容的參數。`meeting cancel --draft-notification` 保留 DAV 刪除流程，只建立取消通知草稿，回傳 `notified: false`、`message_id: null` 與 `draft_id`。
+
+寄送持有帳號鎖，先保存 `sending` 再連 SMTP，成功保存 `sent`；失敗保守保存 `unknown`。`sending`（例如程序中止）、`unknown` 或 `sent` 都禁止再次送出，不自動重試。請以固定 Message-ID 人工查證寄件備份；SMTP 不保證恰好一次。這是草稿流程，不增加每封人工核准或執行身分隔離。
+
+公司庶務等自動化必須保存建立結果的 `draft_id`，再依既有使用者授權呼叫 `mail send ID`；不要把草稿建立成功當成寄送成功。升級 binary 後重跑 `m2k skills install` 更新內嵌 skill。此 PR 不改正文清理、TOFU 或一般讀信 JSON。
 
 ## 新郵件 webhook
 
@@ -324,18 +338,21 @@ m2k meeting book --file invite.ics --room ROOM_NAME --dry-run
 m2k meeting book --file invite.ics --room ROOM_NAME
 m2k meeting cancel UID --dry-run
 m2k meeting cancel UID --room ROOM_NAME
-m2k meeting invite --file invite.ics --send
+m2k mail draft invite --file invite.ics
+m2k mail draft show DRAFT_ID
+m2k mail send DRAFT_ID
 m2k meeting rsvp MAIL_ID --response accept --dry-run
-m2k meeting rsvp MAIL_ID --response decline --comment '那天出差'
+m2k mail draft rsvp MAIL_ID --response decline --comment '那天出差'
+m2k mail send DRAFT_ID
 ```
 
 房間資源結合 DAV 回覆與 site profile 的據點與會議室清單。空檔判定使用有時區的時間範圍；權限不足、事件無法解析或重複事件無法可靠展開時，結果是未知，不能視為空閒。預約前 live recheck 房間衝突，個人衝突回報警告。
 
 `meeting shared` 列出哪些同事已把行事曆分享給你，只有這些人查得到 free/busy、共同空檔與行程。Mail2000 的委派清單包含全公司，不代表對方有分享，所以 m2k 讀自己的委派清單後，逐一 PROPFIND 每位同事的行事曆 home（12 路並行，數百人約數秒到數十秒），只留下真的有可讀行事曆的人；自己、`@system` 與會議室網域不算同事。輸出每人一筆：`email`、`name`（本機通訊錄快取 vCard `N` 的全名，未同步則為 null）、`calendars`（`url`、`display_name`、`writable`），依 email 排序，另有 `scanned`（檢查的委派對象數）與 `warnings`；單一同事查詢失敗只列入 `warnings`，不中斷整個指令。文字輸出開頭是「N 位同事分享行事曆給你（可查 free/busy）」。`free-busy`／`slots`／`book` 查到沒分享的同事（404）時狀態維持 `unknown`，理由會說明對方尚未分享並指向 `meeting shared`，絕不當成空檔。展示資料沒有伺服器可查，回傳空清單與一則警告。結果存在資料目錄的 `shared_calendars.json`：分享很少變動，快取不設過期，之後直接讀快取（`from_cache` 為 true，每人附 `checked_at`），`--refresh` 才重新檢查；換帳號不沿用。`--refresh --branch PATH` 只檢查該部門分支（含子部門）加上不在通訊錄快取的委派對象（通訊錄常缺新進同事），結果併入快取，分支外的人沿用舊結果；平常只約自己 BU 時可快數倍。
 
-個人與房間的兩次 DAV PUT 無法形成跨伺服器交易，因此會回報逐一成功、失敗及補救資訊。預約行事曆與寄送邀請是兩個明確動作；SMTP 使用 `text/calendar; method=REQUEST`。收到的邀請用 `meeting rsvp MAIL_ID --response accept|decline|tentative` 回覆：從郵件的 `text/calendar`（`METHOD:REQUEST`，ICS 沒寫時看 Content-Type 的 `method=`）產生 RFC 5546 `METHOD:REPLY`，保留原 UID、SEQUENCE、ORGANIZER 與 RECURRENCE-ID，ATTENDEE 只放自己並帶 PARTSTAT，以 `text/calendar; method=REPLY` 寄給主辦人。`--dry-run` 只輸出 ICS 與收件者；自己不在 ATTENDEE、自己是主辦人、或 METHOD 不是 REQUEST 時明確報錯且不寄。寄信不自動重試；展示資料拒絕實際寄送。RSVP 不修改自己行事曆裡的 PARTSTAT（輸出 `calendar_updated: false`），需要時另用 `calendar update`。
+個人與房間的兩次 DAV PUT 無法形成跨伺服器交易，因此會回報逐一成功、失敗及補救資訊。預約行事曆與寄送邀請是兩個明確動作；SMTP 使用 `text/calendar; method=REQUEST`。收到的邀請用 `mail draft rsvp MAIL_ID --response accept|decline|tentative` 建立回覆草稿，再以 `mail send DRAFT_ID` 寄送：從郵件的 `text/calendar`（`METHOD:REQUEST`，ICS 沒寫時看 Content-Type 的 `method=`）產生 RFC 5546 `METHOD:REPLY`，保留原 UID、SEQUENCE、ORGANIZER 與 RECURRENCE-ID，ATTENDEE 只放自己並帶 PARTSTAT，以 `text/calendar; method=REPLY` 寄給主辦人。`--dry-run` 只輸出 ICS 與收件者；自己不在 ATTENDEE、自己是主辦人、或 METHOD 不是 REQUEST 時明確報錯且不寄。寄信不自動重試；展示資料拒絕實際寄送。RSVP 不修改自己行事曆裡的 PARTSTAT（輸出 `calendar_updated: false`），需要時另用 `calendar update`。
 
-取消預約用 `meeting cancel UID`（`meeting book` 輸出的 `uid`）。book 在自己與會議室行事曆各寫一份同 UID 的副本，所以 cancel 不靠本機快取：live 對自己與每間會議室行事曆做 CalDAV `calendar-query`（UID filter）找出所有副本，逐筆以 ETag `If-Match` 刪除，並逐筆回報 `deleted`／`not_found`／`precondition_failed`（412，副本在查詢後被改過）／`error`。省略 `--room`／`--url` 時檢查所有會議室；任何行事曆查不到時一份都不刪（`incomplete`），避免只刪掉自己那份而讓會議室副本失聯。副本主辦人不是自己時整筆拒絕。`--dry-run` 只列出會刪的副本。預設不寄信；`--notify-attendees` 才在全部刪除成功後以 `text/calendar; method=CANCEL` 寄給與會者（不含自己與會議室）。未完成（`not_found`／`partial`／`incomplete`）時以非零結束，`--json` 仍帶完整逐筆結果。
+取消預約用 `meeting cancel UID`（`meeting book` 輸出的 `uid`）。book 在自己與會議室行事曆各寫一份同 UID 的副本，所以 cancel 不靠本機快取：live 對自己與每間會議室行事曆做 CalDAV `calendar-query`（UID filter）找出所有副本，逐筆以 ETag `If-Match` 刪除，並逐筆回報 `deleted`／`not_found`／`precondition_failed`（412，副本在查詢後被改過）／`error`。省略 `--room`／`--url` 時檢查所有會議室；任何行事曆查不到時一份都不刪（`incomplete`），避免只刪掉自己那份而讓會議室副本失聯。副本主辦人不是自己時整筆拒絕。`--dry-run` 只列出會刪的副本。預設不寄信；`--draft-notification` 在全部刪除成功後建立 `text/calendar; method=CANCEL` 通知草稿，回傳 `draft_id`，再用 `mail send DRAFT_ID` 寄給與會者（不含自己與會議室）；舊 `--notify-attendees` 直寄會拒絕。未完成（`not_found`／`partial`／`incomplete`）時以非零結束，`--json` 仍帶完整逐筆結果。
 
 若個人行事曆已成功、房間寫入失敗，先依結果確認現況，再使用同一份 ICS 與 `meeting book --file invite.ics --room ROOM_NAME --target room` 補寫；不會重新建立個人事件。
 
@@ -363,16 +380,16 @@ DAV collection 身分比對接受路徑中的 `%40`／`@`、安全字元的 perc
 | `/` 或點搜尋框 | 輸入搜尋；Enter 立即套用 |
 | `[` / `]`、PageUp / PageDown | 上一頁／下一頁；行事曆依視圖移一天／一週／一月；PageUp / PageDown 在閱讀詳情時捲動 |
 | Home / End、g / G | 第一頁／最後一頁；行事曆選取第一個／最後一個活動；閱讀詳情時移到正文開頭／結尾 |
-| 郵件詳情 `R` | 回覆草稿：預設帶 `Re:` 主旨、收件人與引用原文；有 `$EDITOR` 就暫時離開 TUI 編輯，否則用內建輸入（只能在文末追加，Ctrl-D 完成）。編輯後進確認畫面：`y` 寄出（與 `mail reply` 同一路徑，不重試）、`d` 只存草稿、`e` 再編輯、Esc 存草稿離開；草稿放在 `<data-dir>/drafts/reply-*.txt`，寄送失敗顯示原因並保留，展示資料只能存草稿，Ctrl-C 會先存草稿再離開 |
-| 郵件 `c`、郵件詳情 `F` | 寫新信／轉寄：沿用回覆的編輯與確認畫面（`$EDITOR` 或內建輸入，`y` 寄出、`d` 只存草稿、`e` 再編輯、Esc 存草稿、Ctrl-C 存草稿離開），分別與 `mail send`／`mail forward` 同一路徑、不重試。新信草稿可編輯 `To:`、`Cc:`、`Subject:` 與正文，存在 `drafts/mail-*.txt`；轉寄只填 `To:` 與可留空的前言，主旨自動 `Fwd:`、原信以 `forwarded.eml` 附上，存在 `drafts/forward-*.txt` |
+| 郵件詳情 `R` | 回覆草稿：預設帶 `Re:` 主旨、收件人與引用原文；有 `$EDITOR` 就暫時離開 TUI 編輯，否則用內建輸入（只能在文末追加，Ctrl-D 完成）。編輯後進確認畫面：`y` 建立可寄送草稿並顯示 ID（與 `mail draft reply` 同一路徑）、`d` 只存草稿、`e` 再編輯、Esc 存草稿離開；草稿放在 `<data-dir>/drafts/reply-*.txt`，寄送失敗顯示原因並保留，展示資料只能存草稿，Ctrl-C 會先存草稿再離開 |
+| 郵件 `c`、郵件詳情 `F` | 寫新信／轉寄：沿用回覆的編輯與確認畫面（`$EDITOR` 或內建輸入，`y` 建立可寄送草稿、`d` 只存草稿、`e` 再編輯、Esc 存草稿、Ctrl-C 存草稿離開），分別與 `mail draft create`／`mail draft forward` 同一路徑；顯示 ID 後請用 CLI `mail send ID` 寄送。新信草稿可編輯 `To:`、`Cc:`、`Subject:` 與正文，存在 `drafts/mail-*.txt`；轉寄只填 `To:` 與可留空的前言，主旨自動 `Fwd:`、原信以 `forwarded.eml` 附上，存在 `drafts/forward-*.txt` |
 | 郵件 `s` / `f` | 切換選取郵件的已讀／星號（與 `mail flag` 同一路徑），背景寫入伺服器後更新列表標記（`o` 未讀、`*` 星號），狀態列說明改了什麼 |
 | 郵件 `m` / `x` | 移動／刪除選取郵件：`m` 輸入目標資料夾（Tab 輪選本機已知資料夾），確認畫面列出主旨、原資料夾與目標，`y` 才執行（與 `mail move`／`mail delete` 同一路徑），Esc 取消不寫入；刪除會移到伺服器的垃圾桶資料夾，找不到時永久刪除。成功後本機先移除，按 `r` 同步後出現在新資料夾 |
 | 郵件詳情 `a` | 存附件：↑ / ↓ 選附件，目錄預設 `~/Downloads` 可直接修改，Enter 儲存（與 `mail attachment` 同一路徑）；同名檔案已存在時拒絕且不覆寫，成功時狀態列顯示存放路徑 |
-| 郵件詳情 `i` | 回覆會議邀請：郵件帶 `text/calendar` 邀請時，詳情最上方列出主題、主辦人、台北起迄、地點與自己目前的 PARTSTAT。按 `i` 以 ← / →、Tab 選接受／拒絕／暫定並可輸入附註（COMMENT），Enter 進確認畫面列出會議、主辦人與回覆，`y` 才在背景寄出（與 `meeting rsvp` 同一路徑，不重試，不修改行事曆），Esc 取消不寫入；寄送中 Ctrl-C 會等結果。沒有邀請的郵件按 `i` 只在狀態列說明；展示資料拒絕寄送並顯示 CLI 的原因 |
+| 郵件詳情 `i` | 回覆會議邀請：郵件帶 `text/calendar` 邀請時，詳情最上方列出主題、主辦人、台北起迄、地點與自己目前的 PARTSTAT。按 `i` 以 ← / →、Tab 選接受／拒絕／暫定並可輸入附註（COMMENT），Enter 進確認畫面列出會議、主辦人與回覆，`y` 在背景建立草稿並顯示 ID（與 `mail draft rsvp` 同一路徑，不修改行事曆），Esc 取消不寫入；寄送中 Ctrl-C 會等結果。沒有邀請的郵件按 `i` 只在狀態列說明；展示資料拒絕寄送並顯示 CLI 的原因 |
 | `r` | 郵件增量更新；行事曆更新選取日期前後 30 天；聯絡人重新讀取本機資料 |
 | 行事曆 `n` / `e` / `x` | 新增事件（預填選取活動當天或今天的第一個空白整點）／編輯選取事件／刪除選取事件。表單用 Tab、↑ / ↓ 換欄、Space 切換全天、Enter 預覽；確認畫面 `y` 才寫入（與 `calendar create/update/delete` 同一路徑、ETag 條件寫入、不重試），`e` 回表單、Esc 返回。重複事件、別人邀請的事件、有其他與會者或會議室的會議，以及會議室行事曆會拒絕並說明原因；展示資料不寫入；表單開著時 Ctrl-C 先把輸入存成 `drafts/event-*.txt` 再離開 |
 | 找會議室草稿 `b` / `y` | 草稿保存後按 `b` 在背景執行與 `meeting book --dry-run` 相同的 live 檢查（不寫入）：會議室已被占用或無法確認時顯示原因，草稿保留，可再按 `b`；通過才進確認畫面，列出會議室、台北起迄、主旨與將寫入的個人與會議室行事曆，`y` 才預約（與 `meeting book` 同一路徑，寫入前再 live 檢查一次，不重試），Esc 取消不寫入；預約中 Ctrl-C 會等結果。部分寫入時列出已寫入與失敗的行事曆及下一步指令；展示資料拒絕並顯示 CLI 的原因 |
-| 找會議室預約後 `i` / `y` | 預約成功後按 `i` 列出收件人，`y` 才透過 SMTP 寄出 METHOD:REQUEST 邀請（與 `meeting invite --send` 同一路徑，不重試），Esc 取消不寄出；寄送中 Ctrl-C 會等結果 |
+| 找會議室預約後 `i` / `y` | 預約成功後按 `i` 列出收件人，`y` 建立 METHOD:REQUEST 邀請草稿並顯示 ID（與 `mail draft invite` 同一路徑），Esc 取消不寄出；寄送中 Ctrl-C 會等結果 |
 | 聯絡人 `Shift-R` | 手動背景同步全公司目錄，完成後更新列表 |
 | 聯絡人 `v` | 切換列表／組織圖；組織圖中 ↑ / ↓、j / k 選取，Enter 展開或收合部門，選到成員時詳情顯示與聯絡人詳情相同的欄位 |
 | 點擊 | 頁籤、資料夾、選列／詳情、搜尋框、上一頁／下一頁 |
@@ -408,7 +425,7 @@ DAV collection 身分比對接受路徑中的 `%40`／`@`、安全字元的 perc
 
 首次開啟預設最少 6 人、會議 120 分鐘、工作時段 `09:30-17:30`；開始自動帶入下一個足以容納會議的工作日時段。結束留空且有會議分鐘時，從開始時間搜尋到當日工作時段結束，必須放得下指定長度。清空會議分鐘則改查精確起迄，這時必須明確填入結束時間；填入分鐘及結束時間時，列出兩者之間長度足夠的最長連續空檔。
 
-按 Enter 或點「查詢會議室」後在背景執行共用的 `meeting rooms` 查詢；F5 略過快取立即重新查詢，顯示載入狀態、可用房間的名稱／容納／站點／可用空檔（或來源）及錯誤原因。分鐘模式每一列是一段最長連續空檔；在結果列再按 Enter，可於該段內填實際開始／結束（結束留空則用會議分鐘），並填入主旨與與會者。確認後保存 `drafts/<內容識別碼>/invite.ics` 與 `draft.json`，顯示可捲動的訂房與寄送指令。指令固定使用原本 `--data-dir`、實際會議室 `--url` 及同一份 ICS；重複保存相同內容沿用相同 UID，已有手動修改的 ICS 會保留並回報錯誤。保存草稿本身不寫入遠端也不寄信。要在 TUI 預約時按 `b`：先在背景做與 `meeting book --dry-run` 相同的 live 檢查，查詢結果的快取不算數；通過後確認畫面列出會議室、台北起迄、主旨，以及將寫入的個人行事曆與會議室行事曆，按 `y` 才經 `meeting book` 同一路徑寫入（寫入前再 live 檢查一次）。預約成功後按 `i` 列出收件人，再按 `y` 才經 `meeting invite --send` 同一路徑寄出邀請；預約與寄送是兩個獨立步驟，都不會自動發生。任何失敗都保留草稿：檢查未通過顯示衝突原因；只寫入個人行事曆而會議室被拒時，畫面列出已寫入與失敗的行事曆、錯誤與 CLI 的下一步指令（以相同 UID 補寫會議室），不自動重試。展示資料拒絕預約並顯示 CLI 的原因。表單驗證成功送出時，站點、人數、會議分鐘與工作時段保存於帳號資料目錄的 `room_finder_prefs.json`，下次啟動沿用；開始與結束日期不保存，避免沿用過期的日期。未知或 403 的房間排除於可用結果；PageUp／PageDown 或狀態區滾輪可查看錯誤。段內起迄表單按 Esc 回空檔列表；再 Esc 返回郵件。
+按 Enter 或點「查詢會議室」後在背景執行共用的 `meeting rooms` 查詢；F5 略過快取立即重新查詢，顯示載入狀態、可用房間的名稱／容納／站點／可用空檔（或來源）及錯誤原因。分鐘模式每一列是一段最長連續空檔；在結果列再按 Enter，可於該段內填實際開始／結束（結束留空則用會議分鐘），並填入主旨與與會者。確認後保存 `drafts/<內容識別碼>/invite.ics` 與 `draft.json`，顯示可捲動的訂房與寄送指令。指令固定使用原本 `--data-dir`、實際會議室 `--url` 及同一份 ICS；重複保存相同內容沿用相同 UID，已有手動修改的 ICS 會保留並回報錯誤。保存草稿本身不寫入遠端也不寄信。要在 TUI 預約時按 `b`：先在背景做與 `meeting book --dry-run` 相同的 live 檢查，查詢結果的快取不算數；通過後確認畫面列出會議室、台北起迄、主旨，以及將寫入的個人行事曆與會議室行事曆，按 `y` 才經 `meeting book` 同一路徑寫入（寫入前再 live 檢查一次）。預約成功後按 `i` 列出收件人，再按 `y` 經 `mail draft invite` 同一路徑建立可寄送草稿，顯示 ID 後用 CLI `mail send ID` 寄送；預約與寄送是兩個獨立步驟，都不會自動發生。任何失敗都保留草稿：檢查未通過顯示衝突原因；只寫入個人行事曆而會議室被拒時，畫面列出已寫入與失敗的行事曆、錯誤與 CLI 的下一步指令（以相同 UID 補寫會議室），不自動重試。展示資料拒絕預約並顯示 CLI 的原因。表單驗證成功送出時，站點、人數、會議分鐘與工作時段保存於帳號資料目錄的 `room_finder_prefs.json`，下次啟動沿用；開始與結束日期不保存，避免沿用過期的日期。未知或 403 的房間排除於可用結果；PageUp／PageDown 或狀態區滾輪可查看錯誤。段內起迄表單按 Esc 回空檔列表；再 Esc 返回郵件。
 
 房間行事曆與成功探索的目錄保存於帳號資料目錄的 `room_cache.sqlite3`（0600）。TTL 為 10 分鐘，初次查詢至少抓取開始日起 30 天；快取綁定帳號、端點、房間 URL 與覆蓋區間。只保存成功回覆的原始行事曆，重新判定指定區間的忙碌／未知；403 或傳輸失敗不保存為空白行事曆。未命中時最多四路並行查詢，CLI 與 TUI 共用快取與查詢函式。
 
@@ -467,8 +484,8 @@ m2k skills install --path ~/.cursor/skills
 | 哪些同事分享了行事曆 | `meeting shared` |
 | 衝突、共同空檔、方案檢查 | `meeting free-busy/slots/review` |
 | 房間候選與預約 | `meeting resources/rooms/book` |
-| 邀請草稿與寄送 | `meeting prepare/invite` |
-| 回覆會議邀請（RSVP） | `meeting rsvp` |
+| 邀請草稿與寄送 | `meeting prepare` → `mail draft invite` → `mail send ID` |
+| 回覆會議邀請（RSVP） | `mail draft rsvp` → `mail send ID` |
 | 本機資料、保存週期與重跑 | SQLite、`config set`、`watch/prune/status` |
 
 此階段聚焦 Mail2000；其他系統整合不在範圍內。

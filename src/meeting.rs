@@ -1780,28 +1780,13 @@ fn execute_invite(data_dir: &Path, args: InviteArgs, json: bool) -> Result<()> {
     emit(&output, text, json)
 }
 
-pub fn invite(data_dir: &Path, args: InviteArgs) -> Result<(InviteOutput, &'static str)> {
+pub fn invite(_data_dir: &Path, args: InviteArgs) -> Result<(InviteOutput, &'static str)> {
+    if args.send && !args.dry_run {
+        bail!(crate::mail_draft::MIGRATION);
+    }
     let raw = fs::read_to_string(&args.file)
         .with_context(|| format!("無法讀取 ICS：{}", args.file.display()))?;
     let parsed = parse_ics(&raw)?;
-    let should_send = args.send && !args.dry_run;
-    let mut message_id = None;
-    if should_send {
-        if !raw
-            .lines()
-            .any(|line| line.trim().eq_ignore_ascii_case("METHOD:REQUEST"))
-        {
-            bail!("ICS 缺少 METHOD:REQUEST；為避免誤寄普通事件，未寄送");
-        }
-        let _lock = sync::lock(data_dir)?;
-        if data_dir.join(".demo").exists() {
-            bail!("展示資料不提供實際寄信");
-        }
-        let config = config::load(data_dir)?;
-        Store::open(data_dir)?.ensure_account(&config)?;
-        let password = config::password(&config)?;
-        message_id = Some(provider::mail::send_invite(&config, &password, &raw)?);
-    }
     let output = InviteOutput {
         file: args.file,
         uid: parsed.uid,
@@ -1809,15 +1794,11 @@ pub fn invite(data_dir: &Path, args: InviteArgs) -> Result<(InviteOutput, &'stat
         start: parsed.start,
         end: parsed.end,
         attendees: parsed.attendees,
-        dry_run: args.dry_run || !should_send,
-        sent: should_send,
-        message_id,
+        dry_run: true,
+        sent: false,
+        message_id: None,
     };
-    let text = if should_send {
-        "已透過 SMTP 寄送 METHOD:REQUEST 會議邀請。"
-    } else {
-        "已解析會議邀請；未寄送。請明確加上 --send 才會寄信。"
-    };
+    let text = "已解析會議邀請；未寄送。請用 mail draft invite --file 建立草稿，再用 mail send <draft-id>。";
     Ok((output, text))
 }
 

@@ -585,37 +585,79 @@ fn mail_command(dir: &Path, cmd: MailCommand, json: bool) -> Result<()> {
                 json,
             )?;
         }
-        MailCommand::Send(args) => {
-            let message_id = mail_action::send(dir, || {
-                Ok(OutgoingMail {
-                    to: args.to,
-                    cc: args.cc,
-                    subject: args.subject,
-                    body: read_body(&args.body_file)?,
-                    attachments: args.attach,
-                    in_reply_to: None,
-                })
-            })?;
-            emit(&serde_json::json!({"message_id":message_id}), json)?;
-        }
-        MailCommand::Reply {
-            id,
+        MailCommand::Send {
+            draft_id,
+            to,
+            cc,
+            subject,
             body_file,
             attach,
         } => {
+            if !to.is_empty()
+                || !cc.is_empty()
+                || subject.is_some()
+                || body_file.is_some()
+                || !attach.is_empty()
+            {
+                bail!(m2k::mail_draft::MIGRATION);
+            }
+            let draft_id = draft_id.context(m2k::mail_draft::MIGRATION)?;
+            let message_id = m2k::mail_draft::send(dir, &draft_id)?;
             emit(
-                &serde_json::json!({"message_id":m2k::mail_reply::send_reply(dir,&id,|| read_body(&body_file),attach,None)?}),
+                &serde_json::json!({"draft_id":draft_id,"message_id":message_id,"sent":true}),
                 json,
             )?;
         }
-        MailCommand::Forward { id, to, body_file } => {
-            let message_id = mail_action::forward(dir, &id, &to, || {
-                Ok(body_file
-                    .map(|p| read_body(&p))
-                    .transpose()?
-                    .unwrap_or_default())
-            })?;
-            emit(&serde_json::json!({"message_id":message_id}), json)?;
+        MailCommand::Reply { .. } | MailCommand::Forward { .. } => {
+            bail!(m2k::mail_draft::MIGRATION)
+        }
+        MailCommand::Draft(command) => {
+            use cli::DraftCommand;
+            let id = match command {
+                DraftCommand::Create(args) => mail_action::draft(dir, || {
+                    Ok(OutgoingMail {
+                        to: args.to,
+                        cc: args.cc,
+                        subject: args.subject,
+                        body: read_body(&args.body_file)?,
+                        attachments: args.attach,
+                        in_reply_to: None,
+                    })
+                })?,
+                DraftCommand::Show { id } => {
+                    let draft = m2k::mail_draft::show(dir, &id)?;
+                    emit(&m2k::mail_draft::preview(&draft)?, json)?;
+                    return Ok(());
+                }
+                DraftCommand::Reply {
+                    id,
+                    body_file,
+                    attach,
+                } => {
+                    m2k::mail_reply::draft_reply(dir, &id, || read_body(&body_file), attach, None)?
+                }
+                DraftCommand::Forward { id, to, body_file } => {
+                    mail_action::draft_forward(dir, &id, &to, || {
+                        Ok(body_file
+                            .map(|p| read_body(&p))
+                            .transpose()?
+                            .unwrap_or_default())
+                    })?
+                }
+                DraftCommand::Invite { file } => m2k::mail_draft::invite(dir, &file)?,
+                DraftCommand::Rsvp(args) => {
+                    let output = m2k::meeting_rsvp::draft_response(
+                        dir,
+                        &args.id,
+                        args.response,
+                        args.comment.as_deref(),
+                        args.dry_run,
+                    )?;
+                    emit(&output, json)?;
+                    return Ok(());
+                }
+            };
+            emit(&serde_json::json!({"draft_id":id,"sent":false}), json)?;
         }
         MailCommand::Flag { id, flag, clear } => {
             let flag = match flag.as_str() {

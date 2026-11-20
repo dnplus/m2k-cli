@@ -1532,7 +1532,7 @@ fn invite_details(ics: &str, expected_method: &str) -> Result<(String, Vec<Strin
     Ok((title, recipients))
 }
 
-pub fn send(config: &Config, password: &str, mail: &OutgoingMail) -> Result<String> {
+pub(crate) fn build_mail(config: &Config, mail: &OutgoingMail) -> Result<Message> {
     let from = mailbox(&config.email, "寄件者")?;
     let mut builder = Message::builder().from(from).subject(mail.subject.clone());
     let mut recipient_count = 0usize;
@@ -1550,7 +1550,7 @@ pub fn send(config: &Config, password: &str, mail: &OutgoingMail) -> Result<Stri
     let message_id = format!("<{}@{}>", Uuid::new_v4(), config.smtp_host.trim());
     builder = builder.message_id(Some(message_id.clone()));
     if let Some(reply) = &mail.in_reply_to {
-        builder = builder.in_reply_to(reply.clone());
+        builder = builder.in_reply_to(reply.clone()).references(reply.clone());
     }
     let message = if mail.attachments.is_empty() {
         builder.singlepart(SinglePart::plain(mail.body.clone()))?
@@ -1561,6 +1561,13 @@ pub fn send(config: &Config, password: &str, mail: &OutgoingMail) -> Result<Stri
                 .file_name()
                 .and_then(|name| name.to_str())
                 .ok_or_else(|| anyhow!("附件檔名無效"))?;
+            if !std::fs::symlink_metadata(path)
+                .with_context(|| format!("讀取附件失敗: {}", path.display()))?
+                .file_type()
+                .is_file()
+            {
+                bail!("附件必須是一般檔案，拒絕符號連結：{}", path.display());
+            }
             let body =
                 std::fs::read(path).with_context(|| format!("讀取附件失敗: {}", path.display()))?;
             multipart = multipart.singlepart(
@@ -1570,20 +1577,15 @@ pub fn send(config: &Config, password: &str, mail: &OutgoingMail) -> Result<Stri
         }
         builder.multipart(multipart)?
     };
-    let (transport, _) = smtp_transport(config, password)?;
-    transport
-        .send(&message)
-        .map_err(|error| smtp_error(error, "SMTP 寄信失敗"))?;
-    Ok(message_id)
+    Ok(message)
 }
 
-pub fn forward(
+pub(crate) fn build_forward(
     config: &Config,
-    password: &str,
     item: &Item,
     to: &[String],
     introduction: &str,
-) -> Result<String> {
+) -> Result<Message> {
     if item.kind != Kind::Mail {
         bail!("此項目不是郵件");
     }
@@ -1632,44 +1634,10 @@ pub fn forward(
                         .body(raw, header::ContentType::parse("message/rfc822")?),
                 ),
         )?;
-    let (transport, _) = smtp_transport(config, password)?;
-    transport
-        .send(&message)
-        .map_err(|error| smtp_error(error, "SMTP 轉寄失敗"))?;
-    Ok(message_id)
+    Ok(message)
 }
 
-pub fn send_invite(config: &Config, password: &str, ics: &str) -> Result<String> {
-    send_itip(
-        config,
-        password,
-        ics,
-        "REQUEST",
-        "會議邀請",
-        "SMTP 會議邀請寄送失敗",
-    )
-}
-
-/// Sends an iTIP METHOD:CANCEL to the ATTENDEE recipients in `ics`.
-pub fn send_cancel(config: &Config, password: &str, ics: &str) -> Result<String> {
-    send_itip(
-        config,
-        password,
-        ics,
-        "CANCEL",
-        "會議取消",
-        "SMTP 會議取消寄送失敗",
-    )
-}
-
-fn send_itip(
-    config: &Config,
-    password: &str,
-    ics: &str,
-    method: &str,
-    label: &str,
-    failure: &'static str,
-) -> Result<String> {
+pub(crate) fn build_itip(config: &Config, ics: &str, method: &str, label: &str) -> Result<Message> {
     let (subject, recipients) = invite_details(ics, method)?;
     let from = mailbox(&config.email, "寄件者")?;
     let mut builder = Message::builder().from(from).subject(subject.clone());
@@ -1688,20 +1656,11 @@ fn send_itip(
                     .body(ics.to_owned()),
             ),
     )?;
-    let (transport, _) = smtp_transport(config, password)?;
-    transport
-        .send(&message)
-        .map_err(|error| smtp_error(error, failure))?;
-    Ok(message_id)
+    Ok(message)
 }
 
-/// Sends an iTIP METHOD:REPLY to the organizer. Like every other SMTP path it
-/// is attempted once: a timeout may happen after DATA was accepted.
-pub fn send_calendar_reply(
-    config: &Config,
-    password: &str,
-    reply: &CalendarReply<'_>,
-) -> Result<String> {
+/// Build the immutable iTIP REPLY MIME snapshot without connecting SMTP.
+pub(crate) fn build_calendar_reply(config: &Config, reply: &CalendarReply<'_>) -> Result<Message> {
     let from = mailbox(&config.email, "寄件者")?;
     let mut builder = Message::builder()
         .from(from)
@@ -1722,11 +1681,7 @@ pub fn send_calendar_reply(
                     .body(reply.ics.to_owned()),
             ),
     )?;
-    let (transport, _) = smtp_transport(config, password)?;
-    transport
-        .send(&message)
-        .map_err(|error| smtp_error(error, "SMTP 會議回覆寄送失敗"))?;
-    Ok(message_id)
+    Ok(message)
 }
 
 pub struct CalendarReply<'a> {
@@ -3047,4 +3002,24 @@ mod smtp_fallback_tests {
             465
         );
     }
+}
+
+/// The only SMTP submission boundary. The capability is constructed only
+/// after a persisted draft has been locked and marked sending.
+pub(crate) fn submit_draft(
+    config: &Config,
+    password: &str,
+    draft: &crate::mail_draft::Submission,
+) -> Result<()> {
+    let (transport, _) = smtp_transport(config, password)?;
+    // lettre appends CRLF before the DATA terminator unconditionally. Remove
+    // exactly that final CRLF from the input so delivered DATA equals the snapshot.
+    let bytes = draft
+        .bytes()
+        .strip_suffix(b"\r\n")
+        .context("草稿 MIME 缺少結尾 CRLF")?;
+    transport
+        .send_raw(draft.envelope(), bytes)
+        .map_err(|error| smtp_error(error, "SMTP 草稿寄送失敗"))?;
+    Ok(())
 }

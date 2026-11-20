@@ -158,7 +158,8 @@ fn rejected_password_reports_auth_failed_for_imap_smtp_and_dav() {
         WRONG,
         &[
             "mail",
-            "send",
+            "draft",
+            "create",
             "--to",
             "bob@example.test",
             "--subject",
@@ -166,6 +167,12 @@ fn rejected_password_reports_auth_failed_for_imap_smtp_and_dav() {
             "--body-file",
             &body,
         ],
+    );
+    assert!(success, "creating a draft must not authenticate: {json}");
+    let (success, json) = run(
+        &setup,
+        WRONG,
+        &["mail", "send", json["draft_id"].as_str().unwrap()],
     );
     assert!(!success);
     assert_auth_failed(&json);
