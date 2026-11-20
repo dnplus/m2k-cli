@@ -96,7 +96,14 @@ fn mail_reply_cli_keeps_error_code_and_text_with_a_short_password() {
     let output = Command::new(env!("CARGO_BIN_EXE_m2k"))
         .arg("--data-dir")
         .arg(temp.path())
-        .args(["--json", "mail", "reply", "demo-mail-2", "--body-file"])
+        .args([
+            "--json",
+            "mail",
+            "draft",
+            "reply",
+            "demo-mail-2",
+            "--body-file",
+        ])
         .arg(&body)
         .args(["--attach", "/nonexistent/missing.pdf"])
         .env("M2K_PASSWORD", "o")

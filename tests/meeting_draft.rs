@@ -57,7 +57,7 @@ fn persistent_draft_reuses_identity_and_runs_quoted_offline_handoff() {
     assert!(draft.actions["check_booking"]
         .contains("--url 'https://mail.example.test/room/' --dry-run"));
     assert!(draft.actions["repair_room"].ends_with("--target room"));
-    assert!(draft.actions["send_invitation"].ends_with("--send"));
+    assert!(draft.actions["create_invitation_draft"].contains("mail draft invite --file"));
     let executable = std::path::Path::new(env!("CARGO_BIN_EXE_m2k"));
     let path = std::env::join_paths(
         std::iter::once(executable.parent().unwrap().to_path_buf()).chain(std::env::split_paths(

@@ -49,14 +49,19 @@ pub fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// `mail` 在確認可連線後才呼叫，讀不到正文時不會連線。
-pub fn send(dir: &Path, mail: impl FnOnce() -> Result<OutgoingMail>) -> Result<String> {
+/// 建立持久化 MIME 草稿；不連 SMTP。
+pub fn draft(dir: &Path, mail: impl FnOnce() -> Result<OutgoingMail>) -> Result<String> {
     let _lock = sync::lock(dir)?;
-    let (cfg, pass) = online(dir)?;
-    provider::mail::send(&cfg, &pass, &mail()?)
+    let cfg = config::load(dir)?;
+    crate::mail_draft::save(
+        dir,
+        &cfg,
+        "mail",
+        provider::mail::build_mail(&cfg, &mail()?)?,
+    )
 }
 
-pub fn forward(
+pub fn draft_forward(
     dir: &Path,
     id: &str,
     to: &[String],
@@ -64,9 +69,25 @@ pub fn forward(
 ) -> Result<String> {
     let _lock = sync::lock(dir)?;
     let item = get(dir, id, Kind::Mail)?;
-    let (cfg, pass) = online(dir)?;
-    let introduction = introduction()?;
-    provider::mail::forward(&cfg, &pass, &item, to, &introduction)
+    let cfg = config::load(dir)?;
+    crate::mail_draft::save(
+        dir,
+        &cfg,
+        "forward",
+        provider::mail::build_forward(&cfg, &item, to, &introduction()?)?,
+    )
+}
+
+pub fn send(_dir: &Path, _mail: impl FnOnce() -> Result<OutgoingMail>) -> Result<String> {
+    bail!(crate::mail_draft::MIGRATION)
+}
+pub fn forward(
+    _dir: &Path,
+    _id: &str,
+    _to: &[String],
+    _introduction: impl FnOnce() -> Result<String>,
+) -> Result<String> {
+    bail!(crate::mail_draft::MIGRATION)
 }
 
 /// `flag` 是 IMAP 旗標（`\Seen`、`\Flagged`、`\Answered`）；回傳已寫回本機的郵件。

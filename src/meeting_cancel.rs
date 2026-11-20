@@ -3,7 +3,7 @@
 //! book 在自己與會議室行事曆各寫一份同 UID 的副本（Mail2000 未提供 RFC 6638
 //! 伺服器排程時的 fallback），所以取消時要 live 依 UID 找出每個 collection 裡的
 //! 副本，逐筆以 ETag 條件刪除並逐筆回報。本機 SQLite 只是快取，不當查找依據。
-//! 預設不寄任何信；`--notify-attendees` 才以 SMTP 寄 METHOD:CANCEL。
+//! 預設不寄任何信；`--draft-notification` 建立 METHOD:CANCEL 草稿。
 
 use crate::{
     config,
@@ -39,9 +39,11 @@ pub struct CancelArgs {
     pub dry_run: bool,
     #[arg(
         long,
-        help = "刪除完成後以 SMTP 寄 METHOD:CANCEL 給與會者（不含會議室）；預設不寄"
+        help = "已停用直寄；請改用 --draft-notification，再 mail send ID"
     )]
     pub notify_attendees: bool,
+    #[arg(long, help = "刪除完成後建立 METHOD:CANCEL 草稿；不寄信")]
+    pub draft_notification: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -58,6 +60,7 @@ pub struct CancelOutput {
     pub notify_recipients: Vec<String>,
     pub notified: bool,
     pub message_id: Option<String>,
+    pub draft_id: Option<String>,
     pub notify_error: Option<String>,
 }
 
@@ -98,7 +101,7 @@ impl fmt::Display for CancelIncomplete {
             "not_found" => write!(f, "所有已檢查的行事曆都找不到 UID {}", self.0.uid),
             "notify_failed" => write!(
                 f,
-                "所有副本已刪除，但取消通知寄送失敗；請改用其他方式通知與會者：{}",
+                "所有副本已刪除，但取消通知草稿建立失敗；請改用其他方式通知與會者：{}",
                 self.0.notify_error.as_deref().unwrap_or_default()
             ),
             "incomplete" => write!(
@@ -132,7 +135,9 @@ pub fn execute(data_dir: &Path, args: CancelArgs, json: bool) -> Result<()> {
     let output = cancel(data_dir, args)?;
     let text = match output.state.as_str() {
         "dry-run" => "dry-run：以下為 live 找到、將會刪除的副本；未刪除、未寄信。",
-        "complete" if output.notified => "已刪除所有副本並寄出取消通知。",
+        "complete" if output.draft_id.is_some() => {
+            "已刪除所有副本並建立取消通知草稿；請用 mail send <draft-id> 寄送。"
+        }
         "complete" => "已刪除自己與會議室行事曆裡的所有副本；未寄信。",
         _ => "",
     };
@@ -155,6 +160,11 @@ pub fn execute(data_dir: &Path, args: CancelArgs, json: bool) -> Result<()> {
 }
 
 pub fn cancel(data_dir: &Path, args: CancelArgs) -> Result<CancelOutput> {
+    if args.notify_attendees && !args.dry_run {
+        bail!(
+            "已停用 --notify-attendees 直寄；請改用 --draft-notification，再 mail send <draft-id>"
+        );
+    }
     let uid = args.uid.trim().to_owned();
     if uid.is_empty() || uid.contains(['\r', '\n']) {
         bail!("UID 不可為空白或包含換行");
@@ -270,7 +280,7 @@ pub fn cancel(data_dir: &Path, args: CancelArgs) -> Result<CancelOutput> {
         }
     }
 
-    let notify_recipients = if args.notify_attendees {
+    let notify_recipients = if args.notify_attendees || args.draft_notification {
         let source = found
             .iter()
             .find(|(target, _)| target.calendar_url == self_target.calendar_url)
@@ -363,12 +373,14 @@ pub fn cancel(data_dir: &Path, args: CancelArgs) -> Result<CancelOutput> {
         "partial"
     };
 
-    let mut message_id = None;
+    let mut draft_id = None;
     let mut notify_error = None;
     if let (true, Some(ics)) = (state == "complete", cancel_ics.as_deref()) {
         // 寄送失敗不能吞掉已刪除的逐筆結果；重跑也找不到副本，通知補不回來。
-        match provider::mail::send_cancel(&config, &password, ics) {
-            Ok(id) => message_id = Some(id),
+        match provider::mail::build_itip(&config, ics, "CANCEL", "會議取消")
+            .and_then(|message| crate::mail_draft::save(data_dir, &config, "cancel", message))
+        {
+            Ok(id) => draft_id = Some(id),
             Err(error) => {
                 state = "notify_failed";
                 notify_error = Some(format!("{error:#}"));
@@ -385,8 +397,9 @@ pub fn cancel(data_dir: &Path, args: CancelArgs) -> Result<CancelOutput> {
         lookup_errors,
         notify_attendees: args.notify_attendees,
         notify_recipients,
-        notified: message_id.is_some(),
-        message_id,
+        notified: false,
+        message_id: None,
+        draft_id,
         notify_error,
     })
 }

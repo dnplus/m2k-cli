@@ -278,7 +278,7 @@ fn notify_attendees_is_opt_in_and_sends_method_cancel_to_people_only() {
             &uid,
             "--url",
             &info.room_calendar_url,
-            "--notify-attendees",
+            "--draft-notification",
             "--dry-run",
         ],
     );
@@ -300,11 +300,17 @@ fn notify_attendees_is_opt_in_and_sends_method_cancel_to_people_only() {
             &uid,
             "--url",
             &info.room_calendar_url,
-            "--notify-attendees",
+            "--draft-notification",
         ],
     );
     assert_eq!(cancelled["state"], "complete", "{cancelled}");
-    assert_eq!(cancelled["notified"], true);
+    assert_eq!(cancelled["notified"], false);
+    assert!(events(&info, "smtp.message").is_empty());
+    ok(
+        &data,
+        &info,
+        &["mail", "send", cancelled["draft_id"].as_str().unwrap()],
+    );
     let sent = events(&info, "smtp.message");
     assert_eq!(sent.len(), 1);
     // 只寄給與會者，不寄給會議室（CUTYPE=ROOM）或自己。
