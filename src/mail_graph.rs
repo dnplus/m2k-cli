@@ -113,7 +113,10 @@ pub fn execute(dir: &Path, args: GraphArgs, json: bool) -> Result<()> {
     let items = store.mail_since(now - Duration::days(i64::from(args.days)))?;
     let graph = build(items, &config.email, &config.automated_senders, now, &args);
     if json {
-        println!("{}", serde_json::to_string_pretty(&graph)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&crate::mail_content::json(&graph)?)?
+        );
     } else {
         print!("{}", render_markdown(&graph));
     }
@@ -224,7 +227,7 @@ fn parse_message(mut item: Item) -> Option<Message> {
         .as_deref()
         .and_then(|date| DateTime::parse_from_rfc3339(date).ok())?
         .with_timezone(&Utc);
-    let _ = provider::mail::normalize_cached(&mut item);
+    provider::mail::normalize_cached(&mut item).ok()?;
     let bytes = provider::mail::raw_bytes(&item).unwrap_or_default();
     let headers = mailparse::parse_headers(&bytes)
         .ok()
@@ -655,5 +658,5 @@ pub fn render_markdown(graph: &MailGraph) -> String {
             out.push_str(&format!("- 最新回覆：{}\n", thread.latest_excerpt));
         }
     }
-    out
+    crate::mail_content::envelope(&out)
 }

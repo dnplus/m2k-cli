@@ -2371,6 +2371,11 @@ impl App {
             );
             return;
         };
+        let mut safe_item = item.clone();
+        if safe_item.kind == Kind::Mail && mail::normalize_cached(&mut safe_item).is_err() {
+            safe_item.text = "（郵件內容無法解析）".into();
+        }
+        let item = &safe_item;
         let text = if item.kind == Kind::Contacts {
             if item.text.trim().is_empty() {
                 format_contact_item_detail(item)
@@ -2442,6 +2447,11 @@ impl App {
                 },
                 body
             )
+        };
+        let text = if item.kind == Kind::Mail {
+            crate::mail_content::envelope(&text)
+        } else {
+            text
         };
         frame.render_widget(
             Paragraph::new(text)
@@ -3562,7 +3572,7 @@ mod tests {
             date: Some("2026-10-07T00:00:00Z".into()),
             end_date: None,
             text: "詳細頁本文".into(),
-            raw: "完整 RFC822".into(),
+            raw: "Content-Type: text/plain; charset=utf-8\r\n\r\n詳細頁本文".into(),
             flags: vec!["\\Seen".into()],
             emails: vec!["wang@example.com".into()],
             phones: Vec::new(),
@@ -3598,7 +3608,7 @@ mod tests {
             .unwrap();
         assert!(app.detail);
         assert_eq!(app.rows[0].text, "詳細頁本文");
-        assert_eq!(app.rows[0].raw, "完整 RFC822");
+        assert!(app.rows[0].raw.contains("Content-Type: text/plain"));
         app.reload().unwrap();
         assert_eq!(app.rows[0].text, "詳細頁本文");
     }
@@ -3693,6 +3703,19 @@ mod tests {
         app.progress_due = Instant::now();
         assert!(app.poll_background().unwrap());
         assert_eq!(app.progress.as_ref().unwrap().state, "interrupted");
+    }
+
+    #[test]
+    fn detail_sanitizes_legacy_html_and_wraps_external_data() {
+        let (_temp, mut app) = populated_app(1);
+        app.detail = true;
+        app.table.select(Some(0));
+        app.rows[0].raw = "Content-Type: text/html; charset=utf-8\r\n\r\n<p>VISIBLE😀</p><span hidden>HIDDEN_CANARY</span>".into();
+        app.rows[0].text = "STALE_CANARY".into();
+        let text = rendered_text(&mut app, 120, 50, true);
+        assert!(text.contains(crate::mail_content::NOTICE));
+        assert!(text.contains("VISIBLE"));
+        assert!(!text.contains("CANARY"));
     }
 
     fn populated_app(count: usize) -> (tempfile::TempDir, App) {

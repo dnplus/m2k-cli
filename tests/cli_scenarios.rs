@@ -32,8 +32,8 @@ fn demo_survives_process_restart_and_supports_offline_chinese_search() {
     let seed = json(&dir, &["demo", "--no-tui"]);
     assert_eq!(seed["counts"]["mail"], 2);
     let found = json(&dir, &["mail", "search", "原生"]);
-    assert_eq!(found.as_array().unwrap().len(), 1);
-    assert_eq!(found[0]["id"], "demo-mail-1");
+    assert_eq!(found["items"].as_array().unwrap().len(), 1);
+    assert_eq!(found["items"][0]["id"], "demo-mail-1");
     let contact = json(&dir, &["directory", "resolve", "王小明"]);
     assert_eq!(contact["emails"][0], "ming@example.test");
     assert_eq!(json(&dir, &["directory", "self"])["name"], "展示使用者");

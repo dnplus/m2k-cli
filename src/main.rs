@@ -495,12 +495,17 @@ fn list(dir: &Path, kind: Kind, args: ListArgs, full: bool, json: bool) -> Resul
         )?
     };
     if json {
-        if kind == Kind::Mail && !full {
+        if kind == Kind::Mail {
             for item in &mut items {
                 provider::mail::normalize_cached(item)?;
-                item.text = m2k::mail_read::latest_reply(&item.text);
+                if !full {
+                    item.text = m2k::mail_read::latest_reply(&item.text);
+                }
                 item.raw.clear();
             }
+        }
+        if kind == Kind::Mail {
+            return emit(&m2k::mail_content::json(&items)?, true);
         }
         return emit(&items, true);
     }
@@ -529,32 +534,47 @@ fn list_row(id: &str, time: &str, title: &str, detail: &str) -> String {
 
 fn show(dir: &Path, id: &str, kind: Kind, raw: bool, full: bool, json: bool) -> Result<()> {
     let mut item = get(dir, id, kind)?;
-    if raw {
-        use std::io::Write;
-        if kind == Kind::Mail {
-            std::io::stdout().write_all(&provider::mail::raw_bytes(&item)?)?;
+    if kind == Kind::Mail {
+        provider::mail::normalize_cached(&mut item)?;
+        if raw {
+            item.raw = m2k::mail_content::clean(&String::from_utf8_lossy(
+                &provider::mail::raw_bytes(&item)?,
+            ));
         } else {
-            print!("{}", item.raw);
+            item.raw.clear();
         }
-    } else {
-        if kind == Kind::Mail {
-            provider::mail::normalize_cached(&mut item)?;
-            if !full {
-                item.text = m2k::mail_read::latest_reply(&item.text);
-                item.raw.clear();
-            }
+        if !full {
+            item.text = m2k::mail_read::latest_reply(&item.text);
         }
         if json {
-            emit(&item, true)?;
+            return emit(&m2k::mail_content::json(&item)?, true);
+        }
+        let data = if raw {
+            item.raw
         } else {
-            println!(
+            format!(
                 "{}\n{}\n{}\n\n{}",
                 item.title,
                 item.subtitle,
                 item.date.unwrap_or_default(),
                 item.text
-            );
-        }
+            )
+        };
+        print!("{}", m2k::mail_content::envelope(&data));
+        return Ok(());
+    }
+    if raw {
+        print!("{}", item.raw);
+    } else if json {
+        emit(&item, true)?;
+    } else {
+        println!(
+            "{}\n{}\n{}\n\n{}",
+            item.title,
+            item.subtitle,
+            item.date.unwrap_or_default(),
+            item.text
+        );
     }
     Ok(())
 }
@@ -581,7 +601,7 @@ fn mail_command(dir: &Path, cmd: MailCommand, json: bool) -> Result<()> {
         MailCommand::Attachment { id, index, output } => {
             let (name, bytes) = mail_action::save_attachment(dir, &id, index, &output)?;
             emit(
-                &serde_json::json!({"saved":output,"original_filename":name,"bytes":bytes}),
+                &serde_json::json!({"saved":output,"original_filename":provider::mail::display_header(&name),"bytes":bytes}),
                 json,
             )?;
         }

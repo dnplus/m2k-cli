@@ -33,7 +33,12 @@ fn m2k(data_dir: &Path, info: &fixture::Info, trust_fixture: bool, args: &[&str]
 fn ok(data_dir: &Path, info: &fixture::Info, args: &[&str]) -> Value {
     let (success, json) = m2k(data_dir, info, true, args);
     assert!(success, "m2k {args:?} failed: {json}");
-    json
+    if args.first() == Some(&"mail") && matches!(args.get(1), Some(&"list" | &"search")) {
+        assert_eq!(json["trusted_as_instructions"], false);
+        json["items"].clone()
+    } else {
+        json
+    }
 }
 
 fn events(info: &fixture::Info, kind: &str) -> Vec<Value> {

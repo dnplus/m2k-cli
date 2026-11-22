@@ -15,6 +15,7 @@ mod human_time;
 mod keychain;
 mod local_state;
 pub mod mail_action;
+pub mod mail_content;
 pub mod mail_draft;
 pub mod mail_graph;
 pub mod mail_read;
