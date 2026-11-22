@@ -53,8 +53,8 @@ fn addresses(value: &str) -> Result<Vec<String>> {
     Ok(output)
 }
 
-/// 寄出回覆，不重試。
-pub fn send_reply(
+/// 建立回覆 MIME 草稿，不連 SMTP。
+pub fn draft_reply(
     dir: &Path,
     id: &str,
     read_body: impl FnOnce() -> Result<String>,
@@ -74,7 +74,6 @@ pub fn send_reply(
         bail!("展示資料不連線；請指定正式帳號的 --data-dir");
     }
     let cfg = config::load(dir)?;
-    let pass = config::password(&cfg)?;
     let mut mail = reply_mail(&item)?;
     mail.body = read_body()?;
     mail.attachments = attachments;
@@ -82,7 +81,17 @@ pub fn send_reply(
         mail.to = headers.to;
         mail.subject = headers.subject;
     }
-    provider::mail::send(&cfg, &pass, &mail)
+    crate::mail_draft::save(dir, &cfg, "reply", provider::mail::build_mail(&cfg, &mail)?)
+}
+
+pub fn send_reply(
+    _dir: &Path,
+    _id: &str,
+    _read_body: impl FnOnce() -> Result<String>,
+    _attachments: Vec<PathBuf>,
+    _headers: Option<ReplyHeaders>,
+) -> Result<String> {
+    bail!(crate::mail_draft::MIGRATION)
 }
 
 /// TUI 顯示寄送錯誤用：把訊息中的密碼遮掉。太短的密碼（少於 4 字元）會誤傷訊息，不遮。
@@ -383,7 +392,7 @@ mod tests {
     fn check_order_matches_old_cli_body_is_read_last() {
         let temp = tempfile::tempdir().unwrap();
         crate::demo::seed(temp.path()).unwrap();
-        let error = send_reply(
+        let error = draft_reply(
             temp.path(),
             "no-such-id",
             || panic!("正文不該先讀"),
@@ -392,7 +401,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(!format!("{error:#}").contains("展示資料"), "{error:#}");
-        let error = send_reply(
+        let error = draft_reply(
             temp.path(),
             "demo-mail-2",
             || panic!("正文不該先讀"),
@@ -420,7 +429,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         crate::demo::seed(temp.path()).unwrap();
         let id = "demo-mail-2";
-        let error = send_reply(temp.path(), id, || Ok("hi\n".into()), vec![], None).unwrap_err();
+        let error = draft_reply(temp.path(), id, || Ok("hi\n".into()), vec![], None).unwrap_err();
         assert!(format!("{error:#}").contains("展示資料不連線"), "{error:#}");
     }
 }

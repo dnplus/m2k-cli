@@ -100,12 +100,13 @@ fn real_binary_syncs_sends_and_books_against_loopback_fixture() {
 
     let subject = "fixture e2e 寄送";
     let body = info.mail_body.to_string_lossy().into_owned();
-    ok(
+    let draft = ok(
         &data,
         &info,
         &[
             "mail",
-            "send",
+            "draft",
+            "create",
             "--to",
             "bob@example.test",
             "--subject",
@@ -114,6 +115,11 @@ fn real_binary_syncs_sends_and_books_against_loopback_fixture() {
             &body,
         ],
     );
+    assert!(events(&info, "smtp.message").is_empty());
+    let draft_id = draft["draft_id"].as_str().unwrap();
+    ok(&data, &info, &["mail", "draft", "show", draft_id]);
+    assert!(events(&info, "smtp.message").is_empty());
+    ok(&data, &info, &["mail", "send", draft_id]);
     let sent = events(&info, "smtp.message");
     assert_eq!(sent.len(), 1, "exactly one SMTP message: {sent:?}");
     assert_eq!(sent[0]["subject"], subject);
@@ -148,7 +154,8 @@ fn real_binary_syncs_sends_and_books_against_loopback_fixture() {
         &data,
         &info,
         &[
-            "meeting",
+            "mail",
+            "draft",
             "rsvp",
             &invite_id,
             "--response",
@@ -157,7 +164,13 @@ fn real_binary_syncs_sends_and_books_against_loopback_fixture() {
             "那天出差",
         ],
     );
-    assert_eq!(replied["sent"], true, "{replied}");
+    assert_eq!(replied["sent"], false, "{replied}");
+    assert_eq!(events(&info, "smtp.message").len(), 1);
+    ok(
+        &data,
+        &info,
+        &["mail", "send", replied["draft_id"].as_str().unwrap()],
+    );
     let sent = events(&info, "smtp.message");
     assert_eq!(sent.len(), 2, "exactly one RSVP message: {sent:?}");
     assert_eq!(sent[1]["to"], serde_json::json!(["carol@example.test"]));
@@ -284,6 +297,7 @@ fn mail_reply_keeps_error_codes_and_check_order_and_replies_in_thread() {
         true,
         &[
             "mail",
+            "draft",
             "reply",
             &id,
             "--body-file",
@@ -302,6 +316,7 @@ fn mail_reply_keeps_error_codes_and_check_order_and_replies_in_thread() {
         true,
         &[
             "mail",
+            "draft",
             "reply",
             "missing-id",
             "--body-file",
@@ -311,8 +326,19 @@ fn mail_reply_keeps_error_codes_and_check_order_and_replies_in_thread() {
     assert!(!success);
     assert_eq!(error["error"]["code"], "not_found", "{error}");
 
-    let replied = ok(&data, &info, &["mail", "reply", &id, "--body-file", &body]);
-    assert!(replied["message_id"].is_string());
+    let replied = ok(
+        &data,
+        &info,
+        &["mail", "draft", "reply", &id, "--body-file", &body],
+    );
+    assert!(replied["draft_id"].is_string());
+    assert!(events(&info, "smtp.connection").is_empty());
+    let sent_result = ok(
+        &data,
+        &info,
+        &["mail", "send", replied["draft_id"].as_str().unwrap()],
+    );
+    assert!(sent_result["message_id"].is_string());
     let sent = events(&info, "smtp.message");
     assert_eq!(sent.len(), 1, "{sent:?}");
     assert!(sent[0]["subject"].as_str().unwrap().starts_with("Re: "));
@@ -384,4 +410,207 @@ fn unchanged_mail_resync_leaves_the_search_index_byte_identical() {
     ok(&data, &info, &["sync", "--kind", "mail"]);
     assert_eq!(titles(ok(&data, &info, &["mail", "list"])), first);
     assert_eq!(index_segments(&data), segments);
+}
+
+#[test]
+fn draft_only_boundary_snapshots_rejects_legacy_and_never_retries_unknown() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let root = tempfile::tempdir().unwrap();
+    let info = fixture::start(fixture::Options {
+        data_dir: root.path().join("fixture"),
+        user: "fixture@example.test".into(),
+        password: PASSWORD.into(),
+        imap_port: 0,
+        smtp_port: 0,
+        http_port: 0,
+        sync_collection: false,
+    })
+    .unwrap();
+    let data = root.path().join("client");
+    ok(
+        &data,
+        &info,
+        &["init", "--username", &info.user, "--server", &info.server],
+    );
+    ok(
+        &data,
+        &info,
+        &[
+            "config",
+            "set",
+            "--imap-port",
+            &info.imap_port.to_string(),
+            "--smtp-port",
+            &info.smtp_port.to_string(),
+        ],
+    );
+    ok(&data, &info, &["sync", "--kind", "mail"]);
+    let mails = ok(&data, &info, &["mail", "list"]);
+    let mail_id = mails[0]["id"].as_str().unwrap();
+    let invite_id = mails
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["title"] == "季度回顧會議")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    let body = root.path().join("body.txt");
+    let attachment = root.path().join("attachment.bin");
+    std::fs::write(&body, "草稿正文\n.leading dot\n").unwrap();
+    std::fs::write(&attachment, b"original snapshot\0\xff").unwrap();
+    let body = body.to_str().unwrap();
+    let attachment = attachment.to_str().unwrap();
+    for args in [
+        vec![
+            "mail",
+            "send",
+            "--to",
+            "bob@example.test",
+            "--subject",
+            "legacy",
+            "--body-file",
+            body,
+        ],
+        vec!["mail", "reply", mail_id, "--body-file", body],
+        vec!["mail", "forward", mail_id, "--to", "bob@example.test"],
+        vec!["meeting", "invite", "--file", "/nonexistent.ics", "--send"],
+        vec!["meeting", "rsvp", invite_id, "--response", "accept"],
+        vec!["meeting", "cancel", "missing", "--notify-attendees"],
+    ] {
+        let (success, error) = m2k(&data, &info, true, &args);
+        assert!(!success, "legacy allowed: {args:?}");
+        assert!(
+            error["error"]["message"].as_str().unwrap().contains("草稿")
+                || error["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("draft"),
+            "{error}"
+        );
+    }
+    assert!(events(&info, "smtp.connection").is_empty());
+    let created = ok(
+        &data,
+        &info,
+        &[
+            "mail",
+            "draft",
+            "create",
+            "--to",
+            "bob@example.test",
+            "--cc",
+            "carol@example.test",
+            "--subject",
+            "immutable",
+            "--body-file",
+            body,
+            "--attach",
+            attachment,
+        ],
+    );
+    let id = created["draft_id"].as_str().unwrap();
+    let shown = ok(&data, &info, &["mail", "draft", "show", id]);
+    assert_eq!(shown["parts"][0]["text"], "草稿正文\r\n.leading dot\r\n");
+    for args in [
+        vec!["mail", "draft", "reply", mail_id, "--body-file", body],
+        vec![
+            "mail",
+            "draft",
+            "forward",
+            mail_id,
+            "--to",
+            "bob@example.test",
+            "--body-file",
+            body,
+        ],
+        vec!["mail", "draft", "rsvp", invite_id, "--response", "accept"],
+    ] {
+        let result = ok(&data, &info, &args);
+        assert_eq!(result["sent"], false);
+        ok(
+            &data,
+            &info,
+            &[
+                "mail",
+                "draft",
+                "show",
+                result["draft_id"].as_str().unwrap(),
+            ],
+        );
+    }
+    let invitation = ok(
+        &data,
+        &info,
+        &[
+            "mail",
+            "draft",
+            "invite",
+            "--file",
+            info.booking_ics.to_str().unwrap(),
+        ],
+    );
+    ok(
+        &data,
+        &info,
+        &[
+            "mail",
+            "draft",
+            "show",
+            invitation["draft_id"].as_str().unwrap(),
+        ],
+    );
+    assert!(
+        events(&info, "smtp.connection").is_empty(),
+        "creation/preview never connect SMTP"
+    );
+    std::fs::write(attachment, "changed attachment").unwrap();
+    std::fs::write(body, "changed body").unwrap();
+    let bytes = STANDARD
+        .decode(shown["mime_base64"].as_str().unwrap())
+        .unwrap();
+    let outcomes = std::thread::scope(|scope| {
+        let a = scope.spawn(|| m2k(&data, &info, true, &["mail", "send", id]));
+        let b = scope.spawn(|| m2k(&data, &info, true, &["mail", "send", id]));
+        [a.join().unwrap().0, b.join().unwrap().0]
+    });
+    assert_eq!(outcomes.iter().filter(|&&ok| ok).count(), 1);
+    let sent = events(&info, "smtp.message");
+    assert_eq!(sent.len(), 1);
+    let delivered = std::fs::read(info.data_dir.join(sent[0]["file"].as_str().unwrap())).unwrap();
+    assert_eq!(bytes, delivered, "preview snapshot equals exact SMTP DATA");
+    assert!(!m2k(&data, &info, true, &["mail", "send", id]).0);
+    assert_eq!(
+        ok(&data, &info, &["mail", "draft", "show", id])["state"],
+        "sent"
+    );
+
+    let created = ok(
+        &data,
+        &info,
+        &[
+            "mail",
+            "draft",
+            "create",
+            "--to",
+            "bob@example.test",
+            "--subject",
+            "unknown",
+            "--body-file",
+            body,
+        ],
+    );
+    let id = created["draft_id"].as_str().unwrap();
+    std::fs::write(info.data_dir.join("smtp-drop-after-data"), "").unwrap();
+    assert!(!m2k(&data, &info, true, &["mail", "send", id]).0);
+    assert_eq!(
+        ok(&data, &info, &["mail", "draft", "show", id])["state"],
+        "unknown"
+    );
+    assert!(!m2k(&data, &info, true, &["mail", "send", id]).0);
+    assert_eq!(
+        events(&info, "smtp.message").len(),
+        2,
+        "unknown is never retried across CLI processes"
+    );
 }

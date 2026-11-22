@@ -186,7 +186,7 @@ impl ReplyFlow {
             .map(|path| format!("；草稿保留於 {}", path.display()))
             .unwrap_or_default();
         self.notice = Some(format!(
-            "寄送失敗：{reason}{kept}（不會自動重試，按 y 再寄）"
+            "建立草稿失敗：{reason}{kept}（不會自動重試，按 y 再建立）"
         ));
     }
 }

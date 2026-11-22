@@ -262,7 +262,22 @@ pub enum MailCommand {
         )]
         full: bool,
     },
-    Send(SendArgs),
+    #[command(about = "只寄送已保存草稿；舊語法請改用 mail draft create")]
+    Send {
+        draft_id: Option<String>,
+        #[arg(long, hide = true, value_delimiter = ',')]
+        to: Vec<String>,
+        #[arg(long, hide = true, value_delimiter = ',')]
+        cc: Vec<String>,
+        #[arg(long, hide = true)]
+        subject: Option<String>,
+        #[arg(long, hide = true)]
+        body_file: Option<PathBuf>,
+        #[arg(long, hide = true)]
+        attach: Vec<PathBuf>,
+    },
+    #[command(subcommand)]
+    Draft(DraftCommand),
     Reply {
         id: String,
         #[arg(long)]
@@ -302,6 +317,33 @@ pub enum MailCommand {
         #[arg(long)]
         output: PathBuf,
     },
+}
+
+#[derive(Subcommand)]
+pub enum DraftCommand {
+    Create(SendArgs),
+    Show {
+        id: String,
+    },
+    Reply {
+        id: String,
+        #[arg(long)]
+        body_file: PathBuf,
+        #[arg(long)]
+        attach: Vec<PathBuf>,
+    },
+    Forward {
+        id: String,
+        #[arg(long, value_delimiter = ',', required = true)]
+        to: Vec<String>,
+        #[arg(long)]
+        body_file: Option<PathBuf>,
+    },
+    Invite {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    Rsvp(m2k::meeting_rsvp::RsvpArgs),
 }
 
 #[derive(Args)]

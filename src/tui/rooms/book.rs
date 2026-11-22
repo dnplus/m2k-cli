@@ -1,6 +1,6 @@
 use super::super::receive;
 use crate::{
-    meeting::{self, BookArgs, BookOutput, InviteArgs, InviteOutput},
+    meeting::{self, BookArgs, BookOutput, InviteArgs},
     meeting_draft::Draft,
 };
 use anyhow::Result;
@@ -19,9 +19,9 @@ enum Stage {
     BookFailed(String),
     Booked,
     ConfirmInvite(Vec<String>),
-    Inviting(Receiver<Result<InviteOutput>>),
+    Inviting(Receiver<Result<String>>),
     InviteFailed(String),
-    Invited(InviteOutput),
+    Invited(String),
 }
 
 pub(super) struct Flow {
@@ -113,7 +113,7 @@ impl Flow {
                     }
                     Ok((output, _)) => {
                         self.stage = Stage::ConfirmInvite(output.attendees);
-                        Some("確認收件人：y 寄出 · Esc 取消".into())
+                        Some("確認收件人：y 建立草稿 · Esc 取消".into())
                     }
                     Err(error) => Some(format!("無法讀取邀請：{error:#}")),
                 }
@@ -121,17 +121,9 @@ impl Flow {
             (Stage::ConfirmInvite(_), KeyCode::Char('y')) => {
                 let file = self.draft.invitation.clone();
                 self.stage = Stage::Inviting(spawn(&self.dir, move |dir| {
-                    meeting::invite(
-                        dir,
-                        InviteArgs {
-                            file,
-                            dry_run: false,
-                            send: true,
-                        },
-                    )
-                    .map(|(output, _)| output)
+                    crate::mail_draft::invite(dir, &file)
                 }));
-                Some("正在透過 SMTP 寄送會議邀請...".into())
+                Some("正在建立邀請草稿...".into())
             }
             _ => None,
         }
@@ -168,7 +160,7 @@ impl Flow {
             Stage::Booking(rx) => match receive(rx)? {
                 Ok(output) if output.state == "complete" => {
                     let status = format!(
-                        "已預約 {} · 已寫入個人與會議室行事曆 · i 寄邀請給與會者",
+                        "已預約 {} · 已寫入個人與會議室行事曆 · i 建立邀請草稿",
                         output.room.as_deref().unwrap_or("會議室")
                     );
                     self.booked = Some(output);
@@ -188,13 +180,13 @@ impl Flow {
             },
             Stage::Inviting(rx) => match receive(rx)? {
                 Ok(output) => {
-                    let status = format!("已寄送會議邀請給 {}", output.attendees.join(", "));
+                    let status = format!("已建立邀請草稿；mail send {output}");
                     self.stage = Stage::Invited(output);
                     status
                 }
                 Err(error) => {
                     self.stage = Stage::InviteFailed(format!("{error:#}"));
-                    "寄送邀請失敗；草稿與預約保留".to_owned()
+                    "建立邀請草稿失敗；草稿與預約保留".to_owned()
                 }
             },
             _ => return None,
@@ -208,7 +200,7 @@ impl Flow {
                 "b 檢查並預約 · PageUp/Down 捲動 · Esc 返回 · ? 說明"
             }
             Stage::ConfirmBook(_) | Stage::ConfirmInvite(_) => "y 確認 · Esc 取消（不寫入）",
-            Stage::Booked => "i 寄邀請給與會者 · Esc 返回 · ? 說明",
+            Stage::Booked => "i 建立邀請草稿 · Esc 返回 · ? 說明",
             Stage::Checking(_) | Stage::Booking(_) | Stage::Inviting(_) => {
                 "背景執行中 · 寫入時 Ctrl-C 會等結果"
             }
@@ -224,11 +216,11 @@ impl Flow {
             Stage::ConfirmBook(_) => " 確認預約 · y 寫入 · Esc 取消 ",
             Stage::Booking(_) => " 預約中 ",
             Stage::BookFailed(_) => " 預約未完成 · Esc 返回 ",
-            Stage::Booked => " 已預約 · i 寄邀請 · Esc 返回 ",
-            Stage::ConfirmInvite(_) => " 確認寄送邀請 · y 寄出 · Esc 取消 ",
-            Stage::Inviting(_) => " 寄送邀請中 ",
-            Stage::InviteFailed(_) => " 寄送邀請失敗 · Esc 返回 ",
-            Stage::Invited(_) => " 已寄送邀請 · Esc 返回 ",
+            Stage::Booked => " 已預約 · i 建立邀請草稿 · Esc 返回 ",
+            Stage::ConfirmInvite(_) => " 確認建立邀請草稿 · y 建立草稿 · Esc 取消 ",
+            Stage::Inviting(_) => " 建立邀請草稿中 ",
+            Stage::InviteFailed(_) => " 建立邀請草稿失敗 · Esc 返回 ",
+            Stage::Invited(_) => " 邀請草稿已建立 · Esc 返回 ",
         }
     }
 
@@ -256,12 +248,12 @@ impl Flow {
             Stage::Booked => {
                 let room = self.booked.as_ref().and_then(|output| output.room.as_deref());
                 format!(
-                    "已預約 {}，已寫入個人與會議室行事曆。\n邀請尚未寄出；按 i 確認收件人後寄送。",
+                    "已預約 {}，已寫入個人與會議室行事曆。\n邀請尚未寄出；按 i 確認收件人後建立草稿。",
                     room.unwrap_or("會議室")
                 )
             }
             Stage::ConfirmInvite(attendees) => format!(
-                "將透過 SMTP 寄送 METHOD:REQUEST 會議邀請「{}」給：\n{}\n\ny 寄出 · Esc 取消（不寄出）",
+                "將建立 METHOD:REQUEST 草稿 會議邀請「{}」給：\n{}\n\ny 建立草稿 · Esc 取消（不寄出）",
                 draft.title,
                 attendees
                     .iter()
@@ -269,15 +261,11 @@ impl Flow {
                     .collect::<Vec<_>>()
                     .join("\n")
             ),
-            Stage::Inviting(_) => "正在寄送會議邀請...".to_owned(),
+            Stage::Inviting(_) => "正在建立邀請草稿...".to_owned(),
             Stage::InviteFailed(error) => format!(
-                "寄送邀請失敗：{error}\n預約保留。請先確認寄件備份是否已有這封邀請，再決定是否用下方 send_invitation 指令重寄。"
+                "建立邀請草稿失敗：{error}\n預約保留。請用下方 create_invitation_draft 指令建立草稿。"
             ),
-            Stage::Invited(output) => format!(
-                "已寄送會議邀請給 {}\nMessage-ID：{}",
-                output.attendees.join(", "),
-                output.message_id.as_deref().unwrap_or("-")
-            ),
+            Stage::Invited(id) => format!("邀請草稿 ID：{id}\n請用 mail draft show {id} 預覽，mail send {id} 寄送"),
         };
         let mut text = if matches!(self.stage, Stage::ConfirmBook(_) | Stage::ConfirmInvite(_)) {
             format!("{body}\n\n")

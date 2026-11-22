@@ -157,5 +157,5 @@ fn prepare_and_invite_dry_run_preserve_attendees_without_network() {
         .arg("--send")
         .assert()
         .failure()
-        .stdout(contains("展示"));
+        .stdout(contains("已停用直接寄信"));
 }

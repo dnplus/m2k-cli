@@ -19,6 +19,7 @@ struct Envelope {
 }
 
 pub fn serve(fixture: Arc<Fixture>, stream: native_tls::TlsStream<TcpStream>) -> Result<()> {
+    fixture.record("smtp.connection", json!({}), None);
     let mut conn = LineConn::new(stream);
     conn.write("220 localhost m2k fixture ESMTP\r\n")?;
     let mut authenticated = false;
@@ -79,6 +80,10 @@ pub fn serve(fixture: Arc<Fixture>, stream: native_tls::TlsStream<TcpStream>) ->
                     message.extend_from_slice(b"\r\n");
                 }
                 deliver(&fixture, &envelope, message);
+                // Test a lost acknowledgement after DATA was accepted.
+                if fixture.data_dir.join("smtp-drop-after-data").exists() {
+                    return Ok(());
+                }
                 envelope = Envelope::default();
                 conn.write("250 2.0.0 queued\r\n")?;
             }

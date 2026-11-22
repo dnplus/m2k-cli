@@ -6,7 +6,7 @@ use crate::{
     store::Store,
     sync,
 };
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use crossterm::{
     event::{
@@ -612,7 +612,7 @@ impl App {
                 let (tx, rx) = mpsc::channel();
                 std::thread::spawn(move || {
                     let result = match ready {
-                        reply::Ready::Reply(headers, body) => crate::mail_reply::send_reply(
+                        reply::Ready::Reply(headers, body) => crate::mail_reply::draft_reply(
                             &dir,
                             &id,
                             || Ok(body),
@@ -620,15 +620,15 @@ impl App {
                             Some(headers),
                         ),
                         reply::Ready::Forward { to, introduction } => {
-                            crate::mail_action::forward(&dir, &id, &to, || Ok(introduction))
+                            crate::mail_action::draft_forward(&dir, &id, &to, || Ok(introduction))
                         }
-                        reply::Ready::New(mail) => crate::mail_action::send(&dir, || Ok(mail)),
+                        reply::Ready::New(mail) => crate::mail_action::draft(&dir, || Ok(mail)),
                     }
                     .map_err(|error| crate::mail_reply::masked_error(&dir, error));
                     let _ = tx.send(result);
                 });
                 self.pending_send = Some(rx);
-                self.status = format!("正在寄出{label}...");
+                self.status = format!("正在建立{label}草稿...");
             }
         }
     }
@@ -647,14 +647,14 @@ impl App {
                 if let Some(path) = self.reply.take().and_then(|flow| flow.draft_path) {
                     let _ = std::fs::remove_file(path);
                 }
-                self.status = format!("已寄出{label} {message_id}");
+                self.status = format!("已建立{label}草稿；mail send {message_id}");
             }
             Err(error) => {
                 let reason = format!("{error:#}");
                 if let Some(flow) = self.reply.as_mut() {
                     flow.send_failed(&reason);
                 }
-                self.status = format!("{label}寄送失敗，草稿保留");
+                self.status = format!("{label}建立失敗，編輯草稿保留");
             }
         }
         true
@@ -695,7 +695,7 @@ impl App {
     }
 
     fn selected_mail(&mut self) -> Option<Item> {
-        if self.pending_mail.is_some() {
+        if self.pending_mail.is_some() || self.pending_send.is_some() {
             self.status = "上一個郵件操作仍在進行，請等結果".into();
             return None;
         }
@@ -787,7 +787,7 @@ impl App {
 
     fn start_rsvp(&mut self) {
         use crate::meeting_rsvp::{build_rsvp_reply, invite_from_mail, RsvpResponse};
-        if self.pending_mail.is_some() {
+        if self.pending_mail.is_some() || self.pending_send.is_some() {
             self.status = "上一個郵件操作仍在進行，請等結果".into();
             return;
         }
@@ -877,22 +877,21 @@ impl App {
                 else {
                     return;
                 };
-                let Some(item) = self.rows.iter().find(|row| row.id == id).cloned() else {
-                    return;
-                };
-                let (dir, kept) = (self.dir.clone(), item.clone());
-                self.spawn_mail(
-                    &item,
-                    "回覆邀請",
-                    format!(
-                        "已寄送 METHOD:REPLY（{}）給 {organizer}；未修改本機或伺服器行事曆",
-                        response.partstat()
-                    ),
-                    move || {
-                        crate::meeting_rsvp::respond(&dir, &id, response, comment.as_deref(), false)
-                            .map(|_| Some(kept))
-                    },
-                );
+                let dir = self.dir.clone();
+                let (tx, rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let result = crate::meeting_rsvp::draft_response(
+                        &dir,
+                        &id,
+                        response,
+                        comment.as_deref(),
+                        false,
+                    )
+                    .and_then(|output| output.draft_id.context("未建立 RSVP 草稿"));
+                    let _ = tx.send(result);
+                });
+                self.pending_send = Some(rx);
+                self.status = format!("正在建立給 {organizer} 的 RSVP 草稿...");
             }
             mail_prompt::Action::Save { index, path } => {
                 let Some(mail_prompt::Prompt::Attachment { id, notice, .. }) =
@@ -1503,7 +1502,7 @@ impl App {
                 }
                 return Ok(false);
             }
-            if self.pending_mail.is_some() {
+            if self.pending_mail.is_some() || self.pending_send.is_some() {
                 self.status = "郵件操作進行中，請等結果再離開".into();
                 return Ok(false);
             }
@@ -2472,7 +2471,7 @@ impl App {
                 .block(block(" 行事曆操作說明 ")).wrap(Wrap { trim: false }), popup);
             return;
         }
-        frame.render_widget(Paragraph::new("1 / 2 / 3 / 4、Tab     郵件、行事曆、聯絡人、找會議室\n↑ / ↓、j / k           選取資料 / 捲動詳情\n← / →、h / l           切換資料夾\nEnter / Esc            開啟詳情 / 返回列表\n郵件詳情內 R          回覆草稿（$EDITOR；確認後才寄出）\n郵件詳情內 F / 郵件 c  轉寄／寫新信（同回覆草稿與確認畫面）\n郵件 s / f             切換已讀／星號（立即寫入伺服器）\n郵件 m / x             移動／刪除選取郵件（確認畫面 y 才執行）\n郵件詳情內 a           存附件（預設 ~/Downloads，不覆寫）\n郵件詳情內 i           回覆會議邀請：接受／拒絕／暫定（確認畫面 y 才寄出）\n/ 或點搜尋框           搜尋中文或英文\nEnter 或停止輸入       合併本機 + IMAP 搜尋（離線保留本機結果）\n[ / ]、PageUp/Down     前後頁 / 捲動詳情\ng / G、Home / End      第一頁 / 最後一頁\nr                      郵件增量；行事曆 ±30 天；聯絡人讀本機\n聯絡人 Shift-R         手動背景同步全公司目錄\n聯絡人 v              列表／組織圖；Enter 展開收合部門\n滑鼠                   點頁籤、資料夾、列、搜尋框、上一頁/下一頁\n滾輪                   捲動游標所在資料夾、列表或詳情\n會議室時間             明天 14:00 / 下週一 下午兩點（台北；RFC3339 亦可）\n會議室預設             6 人 · 120 分 · 09:30-17:30\n結束留空               從開始找當日空檔；清空分鐘需填結束\n會議室 Enter           查詢；分鐘結果再 Enter 於空檔內挑實際起迄\n草稿畫面 b             live 檢查（同 book --dry-run），確認畫面 y 才預約\n預約完成後 i           確認收件人後 y 寄出會議邀請（METHOD:REQUEST）\n? / Esc                關閉說明\nq / Ctrl-C             離開（表單內 Ctrl-C）").block(block(" 操作說明 ")).wrap(Wrap{trim:false}),popup);
+        frame.render_widget(Paragraph::new("1 / 2 / 3 / 4、Tab     郵件、行事曆、聯絡人、找會議室\n↑ / ↓、j / k           選取資料 / 捲動詳情\n← / →、h / l           切換資料夾\nEnter / Esc            開啟詳情 / 返回列表\n郵件詳情內 R          回覆草稿（$EDITOR；確認後建立草稿，再用 mail send ID）\n郵件詳情內 F / 郵件 c  轉寄／寫新信（同回覆草稿與確認畫面）\n郵件 s / f             切換已讀／星號（立即寫入伺服器）\n郵件 m / x             移動／刪除選取郵件（確認畫面 y 才執行）\n郵件詳情內 a           存附件（預設 ~/Downloads，不覆寫）\n郵件詳情內 i           回覆會議邀請：接受／拒絕／暫定（確認畫面 y 建立草稿）\n/ 或點搜尋框           搜尋中文或英文\nEnter 或停止輸入       合併本機 + IMAP 搜尋（離線保留本機結果）\n[ / ]、PageUp/Down     前後頁 / 捲動詳情\ng / G、Home / End      第一頁 / 最後一頁\nr                      郵件增量；行事曆 ±30 天；聯絡人讀本機\n聯絡人 Shift-R         手動背景同步全公司目錄\n聯絡人 v              列表／組織圖；Enter 展開收合部門\n滑鼠                   點頁籤、資料夾、列、搜尋框、上一頁/下一頁\n滾輪                   捲動游標所在資料夾、列表或詳情\n會議室時間             明天 14:00 / 下週一 下午兩點（台北；RFC3339 亦可）\n會議室預設             6 人 · 120 分 · 09:30-17:30\n結束留空               從開始找當日空檔；清空分鐘需填結束\n會議室 Enter           查詢；分鐘結果再 Enter 於空檔內挑實際起迄\n草稿畫面 b             live 檢查（同 book --dry-run），確認畫面 y 才預約\n預約完成後 i           確認收件人後 y 建立草稿會議邀請（METHOD:REQUEST）\n? / Esc                關閉說明\nq / Ctrl-C             離開（表單內 Ctrl-C）").block(block(" 操作說明 ")).wrap(Wrap{trim:false}),popup);
     }
 }
 
@@ -2764,7 +2763,7 @@ fn draw_reply(frame: &mut Frame, area: Rect, flow: &reply::ReplyFlow, syncing: b
             let keys = if flow.demo {
                 "展示資料只能存草稿 · d 存草稿 · e 繼續編輯 · Esc 存草稿離開"
             } else {
-                "y 確認寄出 · d 只存草稿 · e 繼續編輯 · Esc 存草稿離開"
+                "y 建立可寄送草稿 · d 只存草稿 · e 繼續編輯 · Esc 存草稿離開"
             };
             (
                 format!(" 確認{label} "),
@@ -2899,7 +2898,7 @@ fn draw_mail_prompt(frame: &mut Frame, area: Rect, prompt: &mail_prompt::Prompt)
         } => (
             " 確認回覆邀請 ",
             format!(
-                "會議：「{summary}」\n寄給主辦人：{organizer}\n回覆：{}（PARTSTAT={}）\n附註：{}\n\n只寄出一封 METHOD:REPLY，不修改本機或伺服器行事曆；不會重試。\n\ny 寄出 · Esc 取消",
+                "會議：「{summary}」\n寄給主辦人：{organizer}\n回覆：{}（PARTSTAT={}）\n附註：{}\n\n只建立一封 METHOD:REPLY 草稿（再用 mail send ID），不修改本機或伺服器行事曆；不會重試。\n\ny 建立草稿 · Esc 取消",
                 rsvp_name(*response),
                 response.partstat(),
                 if comment.trim().is_empty() { "（無）" } else { comment.trim() }
@@ -5070,7 +5069,7 @@ mod tests {
             "寄給主辦人：carol@example.test",
             "拒絕（PARTSTAT=DECLINED）",
             "附註：出差",
-            "y 寄出",
+            "y 建立草稿",
         ] {
             assert!(screen.contains(shown), "missing {shown}:\n{screen}");
         }
@@ -5088,11 +5087,7 @@ mod tests {
             &[KeyCode::Char('i'), KeyCode::Enter, KeyCode::Char('y')],
         );
         settle_mail(&mut app);
-        assert!(
-            app.status.contains("回覆邀請失敗：展示資料不提供實際寄信"),
-            "{}",
-            app.status
-        );
+        assert!(app.status.contains("建立失敗"), "{}", app.status);
 
         app.close_detail();
         select_id(&mut app, "demo-mail-2");
@@ -5155,19 +5150,21 @@ mod tests {
             "nothing before y"
         );
         type_keys(&mut app, &[KeyCode::Char('y')]);
-        assert!(app.status.starts_with("正在回覆邀請"), "{}", app.status);
+        assert!(app.status.starts_with("正在建立給"), "{}", app.status);
         let quit = app
             .key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
             .unwrap();
         assert!(!quit, "Ctrl-C 等寄送結果");
         settle_mail(&mut app);
         assert!(
-            app.status
-                .contains("已寄送 METHOD:REPLY（TENTATIVE）給 carol@example.test"),
+            app.status.contains("已建立郵件草稿；mail send"),
             "{}",
             app.status
         );
         assert!(app.detail, "回覆後仍停在詳情");
+        assert!(fixture_events(&info, "smtp.message").is_empty());
+        let id = app.status.split("mail send ").nth(1).unwrap();
+        crate::mail_draft::send(&dir, id).unwrap();
         let sent = fixture_events(&info, "smtp.message");
         assert_eq!(sent.len(), 1, "exactly one REPLY: {sent:?}");
         assert_eq!(sent[0]["to"], serde_json::json!(["carol@example.test"]));
@@ -5376,7 +5373,7 @@ mod tests {
 
         type_keys(&mut app, &[KeyCode::Char('i')]);
         let recipients = rendered_text(&mut app, 140, 40, false);
-        assert!(recipients.contains("確認寄送邀請"), "{recipients}");
+        assert!(recipients.contains("確認建立邀請草稿"), "{recipients}");
         assert!(recipients.contains("bob@example.test"), "{recipients}");
         type_keys(&mut app, &[KeyCode::Esc]);
         assert!(
@@ -5386,12 +5383,13 @@ mod tests {
         type_keys(&mut app, &[KeyCode::Char('i'), KeyCode::Char('y')]);
         settle_rooms(&mut app);
         assert!(
-            app.room_finder
-                .status
-                .contains("已寄送會議邀請給 bob@example.test"),
+            app.room_finder.status.contains("已建立邀請草稿；mail send"),
             "{}",
             app.room_finder.status
         );
+        assert!(fixture_events(&info, "smtp.message").is_empty());
+        let id = app.room_finder.status.split("mail send ").nth(1).unwrap();
+        crate::mail_draft::send(&dir, id).unwrap();
         let sent = fixture_events(&info, "smtp.message");
         assert_eq!(sent.len(), 1, "exactly one invite: {sent:?}");
         assert_eq!(sent[0]["to"], serde_json::json!(["bob@example.test"]));
@@ -5487,7 +5485,7 @@ mod tests {
         );
         type_keys(&mut app, &[KeyCode::Char('y')]);
         settle_mail(&mut app);
-        assert!(app.status.starts_with("已寄出新郵件"), "{}", app.status);
+        assert!(app.status.starts_with("已建立新郵件草稿"), "{}", app.status);
 
         app.open_detail().unwrap();
         let deadline = Instant::now() + Duration::from_secs(15);
@@ -5502,8 +5500,8 @@ mod tests {
             .unwrap();
         type_keys(&mut app, &[KeyCode::Char('y')]);
         settle_mail(&mut app);
-        assert!(app.status.starts_with("已寄出轉寄"), "{}", app.status);
-        assert_eq!(fixture_events(&info, "smtp.message").len(), 2);
+        assert!(app.status.starts_with("已建立轉寄草稿"), "{}", app.status);
+        assert_eq!(fixture_events(&info, "smtp.message").len(), 0);
 
         type_keys(&mut app, &[KeyCode::Char('m')]);
         type_text(&mut app, "Archive");
