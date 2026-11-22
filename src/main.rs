@@ -322,6 +322,7 @@ fn execute(cli: Cli) -> Result<()> {
             let deleted = checked_store(&dir)?.prune(&cfg, Utc::now())?;
             emit(&serde_json::json!({"local_items_removed":deleted}), json)?;
         }
+        Some(Command::Trust { command }) => emit(&m2k::trust::execute(&dir, command)?, json)?,
         Some(Command::Mail { command }) => mail_command(&dir, command, json)?,
         Some(Command::Calendar { command }) => calendar_command(&dir, command, json)?,
         Some(Command::Contacts { command }) => match command {
@@ -479,7 +480,7 @@ fn read_body(file: &Path) -> Result<String> {
 
 fn list(dir: &Path, kind: Kind, args: ListArgs, full: bool, json: bool) -> Result<()> {
     let store = checked_store(dir)?;
-    let mut items = if json {
+    let mut items = if json || kind == Kind::Mail {
         store.list(
             kind,
             args.query.as_deref(),
@@ -494,10 +495,19 @@ fn list(dir: &Path, kind: Kind, args: ListArgs, full: bool, json: bool) -> Resul
             args.limit,
         )?
     };
+    let mut report = m2k::trust::Report::default();
+    let mut decisions = Vec::new();
+    if kind == Kind::Mail {
+        for item in &items {
+            let decision = m2k::trust::check(dir, item)?;
+            report.record(&item.id, &decision);
+            decisions.push(decision);
+        }
+    }
     if json {
         if kind == Kind::Mail {
-            for item in &mut items {
-                provider::mail::normalize_cached(item)?;
+            for (item, decision) in items.iter_mut().zip(&decisions) {
+                decision.prepare(item)?;
                 if !full {
                     item.text = m2k::mail_read::latest_reply(&item.text);
                 }
@@ -505,9 +515,22 @@ fn list(dir: &Path, kind: Kind, args: ListArgs, full: bool, json: bool) -> Resul
             }
         }
         if kind == Kind::Mail {
-            return emit(&m2k::mail_content::json(&items)?, true);
+            let mut value = m2k::mail_content::json(&items)?;
+            for (item, decision) in value["items"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .zip(&decisions)
+            {
+                decision.filter(item);
+            }
+            report.apply(&mut value);
+            return emit(&value, true);
         }
         return emit(&items, true);
+    }
+    if kind == Kind::Mail {
+        print!("{}", report.text());
     }
     println!("{}", list_row("ID", "時間", "主旨 / 姓名", "來源 / 詳情"));
     for mut item in items {
@@ -535,8 +558,11 @@ fn list_row(id: &str, time: &str, title: &str, detail: &str) -> String {
 fn show(dir: &Path, id: &str, kind: Kind, raw: bool, full: bool, json: bool) -> Result<()> {
     let mut item = get(dir, id, kind)?;
     if kind == Kind::Mail {
-        provider::mail::normalize_cached(&mut item)?;
-        if raw {
+        let decision = m2k::trust::check(dir, &item)?;
+        let mut report = m2k::trust::Report::default();
+        report.record(&item.id, &decision);
+        decision.prepare(&mut item)?;
+        if raw && decision.reason.is_none() {
             item.raw = m2k::mail_content::clean(&String::from_utf8_lossy(
                 &provider::mail::raw_bytes(&item)?,
             ));
@@ -547,7 +573,23 @@ fn show(dir: &Path, id: &str, kind: Kind, raw: bool, full: bool, json: bool) -> 
             item.text = m2k::mail_read::latest_reply(&item.text);
         }
         if json {
-            return emit(&m2k::mail_content::json(&item)?, true);
+            let mut value = m2k::mail_content::json(&item)?;
+            decision.filter(&mut value);
+            report.apply(&mut value);
+            return emit(&value, true);
+        }
+        if decision.reason.is_some() {
+            print!(
+                "{}",
+                m2k::mail_content::envelope(&format!(
+                    "{}\n{}\n{}{}",
+                    item.title,
+                    item.subtitle,
+                    decision.message(),
+                    report.text()
+                ))
+            );
+            return Ok(());
         }
         let data = if raw {
             item.raw

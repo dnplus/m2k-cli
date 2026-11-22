@@ -57,6 +57,9 @@ pub struct Store {
 }
 
 impl Store {
+    pub(crate) fn data_dir(&self) -> &Path {
+        self.path.parent().expect("database parent")
+    }
     pub fn open(data_dir: &Path) -> Result<Self> {
         ensure_data_dir(data_dir)?;
         let path = data_dir.join(DATABASE_FILE_NAME);

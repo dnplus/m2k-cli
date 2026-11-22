@@ -444,8 +444,10 @@ fn thread_defaults_to_latest_matching_reply_and_full_history_uses_real_timestamp
     let expected_keys = [
         "count",
         "first_date",
+        "identity_review_ids",
         "items",
         "last_date",
+        "needs_trust_domains",
         "normalized_subject",
         "notice",
         "subject",

@@ -483,6 +483,17 @@ impl App {
             self.status = "先按 Enter 開啟郵件、等正文載入後再按 R 回覆".into();
             return;
         };
+        match crate::trust::check(&self.dir, item) {
+            Ok(decision) if decision.reason.is_some() => {
+                self.status = decision.message();
+                return;
+            }
+            Err(error) => {
+                self.status = format!("正文已隱藏：{error}");
+                return;
+            }
+            _ => {}
+        }
         let text = match crate::mail_reply::compose_draft(item) {
             Ok(text) => text,
             Err(error) => {
@@ -795,6 +806,17 @@ impl App {
             self.status = "先按 Enter 開啟郵件、等正文載入後再按 i 回覆邀請".into();
             return;
         };
+        match crate::trust::check(&self.dir, item) {
+            Ok(decision) if decision.reason.is_some() => {
+                self.status = decision.message();
+                return;
+            }
+            Err(error) => {
+                self.status = format!("正文已隱藏：{error}");
+                return;
+            }
+            _ => {}
+        }
         let Ok(invite) = mail::raw_bytes(item).and_then(|raw| invite_from_mail(&raw)) else {
             self.status = "這封郵件沒有會議邀請（text/calendar），沒有可回覆的內容".into();
             return;
@@ -2375,6 +2397,19 @@ impl App {
         if safe_item.kind == Kind::Mail && mail::normalize_cached(&mut safe_item).is_err() {
             safe_item.text = "（郵件內容無法解析）".into();
         }
+        if safe_item.kind == Kind::Mail {
+            match crate::trust::check(&self.dir, item) {
+                Ok(decision) if decision.reason.is_some() => {
+                    safe_item.text = decision.message();
+                    safe_item.raw.clear();
+                }
+                Err(error) => {
+                    safe_item.text = format!("正文已隱藏：{error}");
+                    safe_item.raw.clear();
+                }
+                _ => {}
+            }
+        }
         let item = &safe_item;
         let text = if item.kind == Kind::Contacts {
             if item.text.trim().is_empty() {
@@ -3710,7 +3745,7 @@ mod tests {
         let (_temp, mut app) = populated_app(1);
         app.detail = true;
         app.table.select(Some(0));
-        app.rows[0].raw = "Content-Type: text/html; charset=utf-8\r\n\r\n<p>VISIBLE😀</p><span hidden>HIDDEN_CANARY</span>".into();
+        app.rows[0].raw = "From: sender@example.test\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>VISIBLE😀</p><span hidden>HIDDEN_CANARY</span>".into();
         app.rows[0].text = "STALE_CANARY".into();
         let text = rendered_text(&mut app, 120, 50, true);
         assert!(text.contains(crate::mail_content::NOTICE));
@@ -4884,6 +4919,40 @@ mod tests {
         crate::demo::seed_without_rooms(temp.path()).unwrap();
         let app = App::new(temp.path()).unwrap();
         (temp, app)
+    }
+
+    #[test]
+    fn trust_reloaded_on_detail_redraw_and_reply_quote() {
+        let (temp, mut app) = demo_reply_app();
+        let index = app.table.selected().unwrap();
+        app.rows[index].raw =
+            "From: sender@vendor.test\r\nSubject: Vendor\r\n\r\nVENDOR_SECRET".into();
+        app.rows[index].text = "VENDOR_SECRET".into();
+        let screen = rendered_text(&mut app, 120, 32, true);
+        assert!(screen.contains("domain_untrusted"));
+        assert!(!screen.contains("VENDOR_SECRET"));
+        app.start_reply(None);
+        assert!(app.reply.is_none());
+        crate::trust::execute(
+            temp.path(),
+            crate::trust::Command::Add {
+                domain: "vendor.test".into(),
+            },
+        )
+        .unwrap();
+        assert!(rendered_text(&mut app, 120, 32, true).contains("VENDOR_SECRET"));
+        crate::trust::execute(
+            temp.path(),
+            crate::trust::Command::Remove {
+                domain: "vendor.test".into(),
+            },
+        )
+        .unwrap();
+        assert!(!rendered_text(&mut app, 120, 32, true).contains("VENDOR_SECRET"));
+        std::fs::write(temp.path().join("trust/domains.json"), "corrupt").unwrap();
+        let screen = rendered_text(&mut app, 120, 32, true);
+        assert!(screen.contains("信任檔損毀"));
+        assert!(!screen.contains("VENDOR_SECRET"));
     }
 
     #[test]

@@ -642,7 +642,7 @@ fn webhook_html_is_rederived_from_mime_and_enclosed() {
     let old = baseline(&mut store, &sub);
     let mut item = mail(11);
     item.text = "STALE_CANARY".into();
-    item.raw = "Subject: safe\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>可見😀</p><span hidden>HIDDEN_CANARY</span><p>&#x202e;正文</p>".into();
+    item.raw = "From: sender@example.test\r\nSubject: safe\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>可見😀</p><span hidden>HIDDEN_CANARY</span><p>&#x202e;正文</p>".into();
     store
         .record_mail_delta(
             &sub,
@@ -671,4 +671,63 @@ fn webhook_html_is_rederived_from_mime_and_enclosed() {
     assert_eq!(body["mail"]["text"], "可見😀\n正文");
     assert_eq!(body["mail"]["raw"], "");
     assert!(!body.to_string().contains("CANARY"));
+}
+
+#[test]
+fn webhook_rechecks_trust_on_retry_after_revocation() {
+    let (url, receiver) = http_receiver(vec!["500 Internal Server Error", "204 No Content"]);
+    let (dir, cfg, mut store) = fixture();
+    let sub = Subscription::new(&cfg, "INBOX", &url).unwrap();
+    queue_one(&mut store, &sub);
+    let mut item = mail(11);
+    item.raw = "From: sender@vendor.test\r\nSubject: vendor\r\n\r\nVENDOR_SECRET".into();
+    store.upsert(&item).unwrap();
+    m2k::trust::execute(
+        dir.path(),
+        m2k::trust::Command::Add {
+            domain: "vendor.test".into(),
+        },
+    )
+    .unwrap();
+    let delivery = Delivery::new(None).unwrap();
+    let first = delivery
+        .drain(&mut store, &sub, &AtomicBool::new(false))
+        .unwrap();
+    let id = first["error"]["event_id"].as_str().unwrap();
+    m2k::trust::execute(
+        dir.path(),
+        m2k::trust::Command::Remove {
+            domain: "vendor.test".into(),
+        },
+    )
+    .unwrap();
+    store
+        .mail_webhook_failed(
+            &sub,
+            id,
+            "fixture time advance",
+            Utc::now() - chrono::Duration::seconds(1),
+        )
+        .unwrap();
+    assert_eq!(
+        delivery
+            .drain(&mut store, &sub, &AtomicBool::new(false))
+            .unwrap()["delivered"],
+        1
+    );
+    let requests = receiver.join().unwrap();
+    let first: Value = serde_json::from_slice(&requests[0].1).unwrap();
+    let second: Value = serde_json::from_slice(&requests[1].1).unwrap();
+    assert!(first["mail"]["text"]
+        .as_str()
+        .unwrap()
+        .contains("VENDOR_SECRET"));
+    assert_eq!(second["mail"]["body_withheld"], "domain_untrusted");
+    assert!(second["mail"].get("text").is_none());
+    assert!(!second.to_string().contains("VENDOR_SECRET"));
+    assert_eq!(
+        second["needs_trust_domains"],
+        serde_json::json!(["vendor.test"])
+    );
+    assert_eq!(first["event_id"], second["event_id"]);
 }

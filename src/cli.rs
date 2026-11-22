@@ -19,6 +19,11 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// 管理郵件正文的信任網域（含子網域）
+    Trust {
+        #[command(subcommand)]
+        command: m2k::trust::Command,
+    },
     #[command(
         about = "將英中日期、星期或週／月範圍解析成有時區的時間範圍",
         long_about = "將英中日期解析成當地日界線的 RFC3339 起迄。保留本週、下週、本月的多日範圍。\n\n範例：next tuesday、下週五、週六、兩天前、明天、2026-10-14、下週。\nnext tuesday 表示下一次週二（今天是週二則七天後）；tuesday／週二允許今天。下週五表示下一個曆週的週五。"
