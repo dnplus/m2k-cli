@@ -113,17 +113,11 @@ fn empty_html_does_not_hide_a_later_useful_html_part() {
 }
 
 #[test]
-fn useful_cached_body_skips_raw_parsing_but_decodes_legacy_headers() {
+fn nonempty_cached_body_cannot_bypass_invalid_mime() {
     let mut cached = item("");
     cached.raw = "base64:invalid".into();
     cached.text = "Preserve useful text".into();
-    cached.title = "=?UTF-8?Q?=E6=B8=AC=E8=A9=A6?=".into();
-    cached.subtitle = "=?UTF-8?B?5ris6Kmm?= <sender@example.test>".into();
-    assert!(normalize_cached(&mut cached).unwrap());
-    assert_eq!(cached.title, "測試");
-    assert_eq!(cached.subtitle, "測試 <sender@example.test>");
-    assert_eq!(cached.text, "Preserve useful text");
-    assert_eq!(cached.raw, "base64:invalid");
+    assert!(normalize_cached(&mut cached).is_err());
 }
 
 #[test]

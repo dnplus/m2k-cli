@@ -473,9 +473,9 @@ fn find_body(part: &ParsedMail<'_>, mimetype: &str) -> Result<Option<String>> {
     }
     let body = part.get_body().context("解碼郵件本文失敗")?;
     let body = if mimetype == "text/html" {
-        html_to_text(&body)
+        crate::mail_content::html(&body)
     } else {
-        body
+        crate::mail_content::clean(&body)
     };
     Ok((!body.trim().is_empty()).then_some(body))
 }
@@ -485,137 +485,6 @@ fn body_text(mail: &ParsedMail<'_>) -> Result<String> {
         return Ok(body);
     }
     Ok(find_body(mail, "text/html")?.unwrap_or_default())
-}
-
-fn decode_html_entities(text: &str) -> String {
-    let mut output = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find('&') {
-        output.push_str(&rest[..start]);
-        rest = &rest[start..];
-        let Some(end) = rest
-            .as_bytes()
-            .iter()
-            .take(17)
-            .position(|byte| *byte == b';')
-        else {
-            output.push('&');
-            rest = &rest[1..];
-            continue;
-        };
-        let entity = &rest[1..end];
-        let decoded = match entity {
-            "amp" => Some('&'),
-            "lt" => Some('<'),
-            "gt" => Some('>'),
-            "quot" => Some('"'),
-            "apos" => Some('\''),
-            "nbsp" => Some(' '),
-            "ndash" => Some('–'),
-            "mdash" => Some('—'),
-            "hellip" => Some('…'),
-            "bull" => Some('•'),
-            "copy" => Some('©'),
-            "reg" => Some('®'),
-            _ => entity
-                .strip_prefix("#x")
-                .or_else(|| entity.strip_prefix("#X"))
-                .and_then(|digits| u32::from_str_radix(digits, 16).ok())
-                .or_else(|| {
-                    entity
-                        .strip_prefix('#')
-                        .and_then(|digits| digits.parse().ok())
-                })
-                .and_then(char::from_u32),
-        };
-        if let Some(character) = decoded {
-            output.push(character);
-            rest = &rest[end + 1..];
-        } else {
-            output.push('&');
-            rest = &rest[1..];
-        }
-    }
-    output.push_str(rest);
-    output
-}
-
-fn html_to_text(html: &str) -> String {
-    let mut output = String::with_capacity(html.len());
-    let mut rest = html;
-    let mut hidden = None::<String>;
-    while !rest.is_empty() {
-        if let Some(comment) = rest.strip_prefix("<!--") {
-            rest = comment.find("-->").map_or("", |end| &comment[end + 3..]);
-            continue;
-        }
-        if rest.starts_with('<') {
-            let mut quote = None;
-            let end = rest.char_indices().skip(1).find_map(|(index, character)| {
-                match (quote, character) {
-                    (Some(current), character) if current == character => quote = None,
-                    (None, '\'' | '"') => quote = Some(character),
-                    (None, '>') => return Some(index),
-                    _ => {}
-                }
-                None
-            });
-            if let Some(end) = end {
-                let tag = rest[1..end].trim();
-                let closing = tag.starts_with('/');
-                let name = tag
-                    .trim_start_matches('/')
-                    .split_ascii_whitespace()
-                    .next()
-                    .unwrap_or_default()
-                    .trim_end_matches('/')
-                    .to_ascii_lowercase();
-                if name.starts_with(|character: char| character.is_ascii_alphabetic())
-                    || name.starts_with(['!', '?'])
-                {
-                    if hidden.as_deref() == Some(name.as_str()) && closing {
-                        hidden = None;
-                    } else if hidden.is_none() {
-                        if !closing && matches!(name.as_str(), "head" | "script" | "style") {
-                            hidden = Some(name);
-                        } else if matches!(
-                            name.as_str(),
-                            "br" | "p"
-                                | "div"
-                                | "li"
-                                | "tr"
-                                | "hr"
-                                | "h1"
-                                | "h2"
-                                | "h3"
-                                | "h4"
-                                | "h5"
-                                | "h6"
-                                | "blockquote"
-                                | "pre"
-                        ) {
-                            output.push('\n');
-                        } else if matches!(name.as_str(), "td" | "th") {
-                            output.push(' ');
-                        }
-                    }
-                    rest = &rest[end + 1..];
-                    continue;
-                }
-            }
-        }
-        let character = rest.chars().next().expect("rest is nonempty");
-        if hidden.is_none() {
-            output.push(character);
-        }
-        rest = &rest[character.len_utf8()..];
-    }
-    decode_html_entities(&output)
-        .lines()
-        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn validated_internal_date(value: Option<&str>) -> Option<String> {
@@ -660,7 +529,7 @@ fn parse_item(folder: &str, uid_validity: u32, fetched: &FetchedMessage) -> Resu
         .enumerate()
         .map(|(index, (filename, content_type, body))| Attachment {
             index,
-            filename: filename.clone(),
+            filename: display_header(filename),
             content_type: content_type.clone(),
             size: body.len(),
         })
@@ -1736,7 +1605,7 @@ pub fn raw_bytes(item: &Item) -> Result<Vec<u8>> {
 
 pub fn display_header(value: &str) -> String {
     if !value.contains("=?") {
-        return value.to_owned();
+        return crate::mail_content::clean(value);
     }
     let bytes = value.as_bytes();
     let mut output = String::with_capacity(value.len());
@@ -1765,7 +1634,7 @@ pub fn display_header(value: &str) -> String {
             }
         }
     }
-    output
+    crate::mail_content::clean(&output)
 }
 
 fn is_linear_whitespace(value: &str) -> bool {
@@ -1921,30 +1790,32 @@ pub fn normalize_cached(item: &mut Item) -> Result<bool> {
     let mut title = display_header(&item.title);
     let mut subtitle = display_header(&item.subtitle);
     let mut text = None;
-    if item.text.trim().is_empty() && !item.raw.is_empty() {
+    if !item.raw.is_empty() {
         let raw = raw_bytes(item)?;
         let mail = parse_mail(&raw).context("解析快取郵件 MIME 失敗")?;
         if !mail.headers.is_empty() {
             let subject = first_header(&mail, "Subject");
             if !subject.is_empty() {
-                title = subject;
+                title = display_header(&subject);
             }
             let from = first_header(&mail, "From");
             if !from.is_empty() {
-                subtitle = from;
+                subtitle = display_header(&from);
             }
             let body = body_text(&mail)?;
-            if !body.trim().is_empty() {
-                text = Some(body);
-            }
+            text = Some(body);
         }
     }
-    let changed = title != item.title || subtitle != item.subtitle || text.is_some();
+    let text = text.unwrap_or_else(|| crate::mail_content::clean(&item.text));
+    let mut changed = title != item.title || subtitle != item.subtitle || text != item.text;
+    for attachment in &mut item.attachments {
+        let name = display_header(&attachment.filename);
+        changed |= name != attachment.filename;
+        attachment.filename = name;
+    }
     item.title = title;
     item.subtitle = subtitle;
-    if let Some(text) = text {
-        item.text = text;
-    }
+    item.text = text;
     Ok(changed)
 }
 

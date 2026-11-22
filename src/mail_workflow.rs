@@ -282,47 +282,51 @@ fn execute_thread(
     for item in &mut items {
         *item = store.get(&item.id)?;
         provider::mail::normalize_cached(item)?;
+        item.raw.clear();
         if !full {
             item.text = crate::mail_read::latest_reply(&item.text);
-            item.raw.clear();
         }
     }
     if json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "subject": target,
-                "normalized_subject": normalized,
+            serde_json::to_string_pretty(&crate::mail_content::json(&serde_json::json!({
+                "trusted_as_instructions": false,
+                "notice": crate::mail_content::NOTICE,
+                "subject": crate::mail_content::clean(&target),
+                "normalized_subject": crate::mail_content::clean(&normalized),
                 "count": items.len(),
                 "first_date": items.iter().filter_map(|item| item.date.as_deref())
                     .filter(|date| parse_timestamp(date).is_some()).min_by_key(|date| parse_timestamp(date)),
                 "last_date": items.iter().filter_map(|item| item.date.as_deref())
                     .filter(|date| parse_timestamp(date).is_some()).max_by_key(|date| parse_timestamp(date)),
                 "items": items,
-            }))?
+            }))?)?
         );
     } else {
+        let mut output = String::new();
         for heading in [
             format!("主旨：{target}"),
             format!("正規化主旨：{normalized}"),
             format!("thread 共 {} 封", items.len()),
         ] {
-            println!("{}", crate::plain_output::row(&[(&heading, 118)]));
+            output.push_str(&crate::plain_output::row(&[(&heading, 118)]));
+            output.push('\n');
         }
         for (index, item) in items.iter().enumerate() {
-            println!(
-                "{}",
-                crate::plain_output::row(&[
-                    (&(index + 1).to_string(), 4),
-                    (item.date.as_deref().unwrap_or("無日期"), 25),
-                    (&item.subtitle, 30),
-                    (&item.title, 56),
-                ])
-            );
+            output.push_str(&crate::plain_output::row(&[
+                (&(index + 1).to_string(), 4),
+                (item.date.as_deref().unwrap_or("無日期"), 25),
+                (&item.subtitle, 30),
+                (&item.title, 56),
+            ]));
+            output.push('\n');
             if !item.text.trim().is_empty() {
-                println!("   {}", item.text.trim());
+                output.push_str(item.text.trim());
+                output.push('\n');
             }
         }
+        print!("{}", crate::mail_content::envelope(&output));
     }
     Ok(())
 }

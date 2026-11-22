@@ -50,7 +50,10 @@ fn mail(id: &str, folder: &str, hours_ago: i64, headers: &[&str], text: &str) ->
         date: Some((now() - Duration::hours(hours_ago)).to_rfc3339()),
         end_date: None,
         text: text.into(),
-        raw: format!("{}\r\n\r\n{text}\r\n", headers.join("\r\n")),
+        raw: format!(
+            "{}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{text}\r\n",
+            headers.join("\r\n")
+        ),
         flags: vec![],
         emails: vec![],
         phones: vec![],

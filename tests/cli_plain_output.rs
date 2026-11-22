@@ -38,7 +38,14 @@ fn plain(dir: &TempDir, args: &[&str]) -> String {
 fn json(dir: &TempDir, args: &[&str]) -> Value {
     let mut arguments = vec!["--json"];
     arguments.extend_from_slice(args);
-    serde_json::from_slice(&output(dir, &arguments)).unwrap()
+    let value: Value = serde_json::from_slice(&output(dir, &arguments)).unwrap();
+    if args.first() == Some(&"mail") && matches!(args.get(1), Some(&"list" | &"search")) {
+        assert_eq!(value["trusted_as_instructions"], false);
+        assert_eq!(value["notice"], m2k::mail_content::NOTICE);
+        value["items"].clone()
+    } else {
+        value
+    }
 }
 
 fn item(kind: Kind, id: &str, title: &str, text: &str, date: &str) -> Item {
@@ -205,7 +212,7 @@ fn json_list_keeps_full_ids_bodies_and_other_fields_for_every_kind() {
         let kind_name = kind.to_string();
         let mut args = vec![kind_name.as_str(), "list"];
         if kind == Kind::Mail {
-            // Mail JSON drops raw unless --full; see the compact-list test.
+            // --full retains history, but never raw.
             args.push("--full");
         }
         let listed = json(&dir, &args);
@@ -213,12 +220,18 @@ fn json_list_keeps_full_ids_bodies_and_other_fields_for_every_kind() {
         assert_eq!(rows.len(), 2);
         for original in items.iter().filter(|item| item.kind == kind) {
             let actual = rows.iter().find(|row| row["id"] == original.id).unwrap();
-            assert_eq!(actual, &serde_json::to_value(original).unwrap());
+            let mut expected = original.clone();
+            if kind == Kind::Mail {
+                m2k::provider::mail::normalize_cached(&mut expected).unwrap();
+                expected.raw.clear();
+            }
+            assert_eq!(actual, &serde_json::to_value(expected).unwrap());
         }
     }
     let compact = json(&dir, &["mail", "list"]);
     for original in items.iter().filter(|item| item.kind == Kind::Mail) {
         let mut expected = original.clone();
+        m2k::provider::mail::normalize_cached(&mut expected).unwrap();
         expected.raw.clear();
         let actual = compact
             .as_array()
@@ -299,7 +312,7 @@ fn show_reads_the_requested_message_and_full_opt_in_restores_quoted_history() {
 }
 
 #[test]
-fn json_show_filters_body_and_omits_raw_by_default_but_full_preserves_both() {
+fn json_show_filters_body_and_omits_raw_by_default_but_full_preserves_only_body() {
     let items = thread_items();
     let dir = seed(&items);
     let displayed = json(&dir, &["mail", "show", "old-requested"]);
@@ -316,14 +329,14 @@ fn json_show_filters_body_and_omits_raw_by_default_but_full_preserves_both() {
     );
     let full = json(&dir, &["mail", "show", "old-requested", "--full"]);
     assert_eq!(full["text"], items[0].text);
-    assert_eq!(full["raw"], items[0].raw);
+    assert_eq!(full["raw"], "");
     assert_unchanged(&dir, &items);
 }
 
 // Agents list mail with --json on every turn; a single attachment-bearing
 // message used to put megabytes of base64 into their context.
 #[test]
-fn json_list_and_search_omit_raw_by_default_but_full_restores_it() {
+fn json_list_and_search_omit_raw_by_default_but_full_also_omits_it() {
     let payload = STANDARD.encode(vec![0x5a_u8; 64 * 1024]);
     let mut original = item(
         Kind::Mail,
@@ -368,7 +381,7 @@ fn json_list_and_search_omit_raw_by_default_but_full_restores_it() {
             .iter()
             .find(|item| item["id"] == "with-attachment")
             .unwrap();
-        assert_eq!(found["raw"], original.raw, "{full_args:?}");
+        assert_eq!(found["raw"], "", "{full_args:?}");
         assert_eq!(found["text"], original.text);
     }
     // Plain-text rows never carried raw; --full is accepted there as a no-op.
@@ -380,7 +393,7 @@ fn json_list_and_search_omit_raw_by_default_but_full_restores_it() {
 }
 
 #[test]
-fn raw_mail_output_preserves_original_crlf_and_non_utf8_bytes() {
+fn raw_mail_output_is_enclosed_and_utf8_lossy() {
     let raw = b"From: sender@example.test\r\nSubject: Raw\r\nContent-Type: text/plain; charset=iso-8859-1\r\n\r\ncaf\xe9\r\n> historical\r\n";
     let mut original = item(
         Kind::Mail,
@@ -393,7 +406,7 @@ fn raw_mail_output_preserves_original_crlf_and_non_utf8_bytes() {
     let dir = seed(std::slice::from_ref(&original));
     assert_eq!(
         output(&dir, &["mail", "show", "raw-binary", "--raw"]),
-        raw.to_vec()
+        m2k::mail_content::envelope(&String::from_utf8_lossy(raw)).into_bytes()
     );
     assert_unchanged(&dir, &[original]);
 }
@@ -420,7 +433,7 @@ fn empty_cached_text_is_recovered_from_raw_in_memory_before_reply_filtering() {
         .as_str()
         .unwrap()
         .contains("RECOVERED_QUOTED_SECRET"));
-    assert_eq!(full["raw"], original.raw);
+    assert_eq!(full["raw"], "");
     assert_unchanged(&dir, &[original]);
 }
 
@@ -434,7 +447,9 @@ fn thread_defaults_to_latest_matching_reply_and_full_history_uses_real_timestamp
         "items",
         "last_date",
         "normalized_subject",
+        "notice",
         "subject",
+        "trusted_as_instructions",
     ];
     for selector in [["--id", "old-requested"], ["--subject", "專案上線"]] {
         let printed = plain(&dir, &["mail", "thread", selector[0], selector[1]]);
@@ -494,7 +509,7 @@ fn thread_defaults_to_latest_matching_reply_and_full_history_uses_real_timestamp
         .as_array()
         .unwrap()
         .iter()
-        .all(|item| !item["raw"].as_str().unwrap().is_empty()));
+        .all(|item| item["raw"].as_str().unwrap().is_empty()));
     assert!(full.to_string().contains("QUOTED_SECRET"));
     assert!(!full.to_string().contains("UNRELATED_SECRET"));
     let full_text = plain(&dir, &["mail", "thread", "--id", "old-requested", "--full"]);
@@ -691,4 +706,53 @@ fn meeting_resources_prints_compact_catalog_and_keeps_json_structure() {
     assert_compact_meeting_text(&printed);
     assert!(printed.contains(rooms[0]["name"].as_str().unwrap()));
     assert_eq!(json(&dir, &flags), before);
+}
+
+#[test]
+fn hostile_cached_html_uses_shared_pipeline_at_every_cli_body_exit() {
+    let mut original = item(
+        Kind::Mail,
+        "hostile",
+        "安全測試",
+        "STALE_HIDDEN",
+        &Utc::now().to_rfc3339(),
+    );
+    original.raw = "From: =?UTF-8?Q?sender=E2=80=8B?= <sender@example.test>\r\nSubject: 安全測試\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>VISIBLE😀</p><div hidden>HIDDEN_CANARY</div><div style='font-size:0px'>ZERO_CANARY</div><p>前&#x200b;後</p><p>``````</p><blockquote>歷史</blockquote>".into();
+    original.attachments[0].filename = "file\u{202e}\x1b[31m.txt".into();
+    let dir = seed(&[original]);
+    for args in [
+        vec!["mail", "show", "hostile"],
+        vec!["mail", "show", "hostile", "--full"],
+        vec!["mail", "thread", "--id", "hostile"],
+        vec!["mail", "thread", "--id", "hostile", "--full"],
+        vec!["mail", "graph"],
+    ] {
+        let text = plain(&dir, &args);
+        assert!(text.starts_with(m2k::mail_content::NOTICE), "{args:?}");
+        assert!(text.trim_end().ends_with(m2k::mail_content::NOTICE));
+        assert!(text.contains("VISIBLE😀"), "{args:?}: {text}");
+        for bad in [
+            "HIDDEN_CANARY",
+            "ZERO_CANARY",
+            "STALE_HIDDEN",
+            "\u{200b}",
+            "\u{202e}",
+            "\x1b",
+        ] {
+            assert!(!text.contains(bad), "{args:?}: {bad}");
+        }
+        let value = json(&dir, &args);
+        assert_eq!(value["trusted_as_instructions"], false);
+        assert_eq!(value["notice"], m2k::mail_content::NOTICE);
+        let serialized = value.to_string();
+        assert!(!serialized.contains("CANARY"));
+        assert!(!serialized.contains("STALE_HIDDEN"));
+        assert!(!serialized.contains("<div"));
+    }
+    let raw = json(&dir, &["mail", "show", "hostile", "--raw"]);
+    assert_eq!(raw["trusted_as_instructions"], false);
+    assert!(raw["raw"].as_str().unwrap().contains("Content-Type:"));
+    assert!(
+        plain(&dir, &["mail", "show", "hostile", "--raw"]).starts_with(m2k::mail_content::NOTICE)
+    );
 }

@@ -633,3 +633,42 @@ fn status_reports_signing_enabled_without_exposing_the_secret() {
     assert_eq!(run(None)["webhook_signing"], false);
     assert_eq!(run(Some(SECRET))["webhook_signing"], true);
 }
+
+#[test]
+fn webhook_html_is_rederived_from_mime_and_enclosed() {
+    let (url, receiver) = http_receiver(vec!["204 No Content"]);
+    let (_dir, cfg, mut store) = fixture();
+    let sub = Subscription::new(&cfg, "INBOX", &url).unwrap();
+    let old = baseline(&mut store, &sub);
+    let mut item = mail(11);
+    item.text = "STALE_CANARY".into();
+    item.raw = "Subject: safe\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>可見😀</p><span hidden>HIDDEN_CANARY</span><p>&#x202e;正文</p>".into();
+    store
+        .record_mail_delta(
+            &sub,
+            Some(old),
+            &Delta {
+                cursor: Cursor {
+                    uid_validity: 7,
+                    last_uid: 11,
+                },
+                items: vec![item],
+                baseline: false,
+                has_more: false,
+                parse_errors: Default::default(),
+            },
+            Utc::now(),
+        )
+        .unwrap();
+    Delivery::new(None)
+        .unwrap()
+        .drain(&mut store, &sub, &AtomicBool::new(false))
+        .unwrap();
+    let requests = receiver.join().unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].1).unwrap();
+    assert_eq!(body["trusted_as_instructions"], false);
+    assert_eq!(body["notice"], m2k::mail_content::NOTICE);
+    assert_eq!(body["mail"]["text"], "可見😀\n正文");
+    assert_eq!(body["mail"]["raw"], "");
+    assert!(!body.to_string().contains("CANARY"));
+}

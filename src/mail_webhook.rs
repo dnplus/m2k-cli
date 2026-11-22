@@ -88,12 +88,15 @@ pub(crate) fn event(
         &item.remote_id,
     ))?);
     let mut mail = item.clone();
+    if crate::provider::mail::normalize_cached(&mut mail).is_err() {
+        mail.text.clear();
+    }
     mail.raw.clear();
-    Ok(
-        json!({"schema_version":1,"event_id":id,"event":"mail.received","account":subscription.email,"observed_at":now,
+    Ok(crate::mail_content::json(
+        &json!({"trusted_as_instructions":false,"notice":crate::mail_content::NOTICE,"schema_version":1,"event_id":id,"event":"mail.received","account":subscription.email,"observed_at":now,
         "folder":item.collection,"uid_validity":item.uid_validity,"uid":item.remote_id.parse::<u32>()?,"mail":mail,
         "parse_error":parse_error.map(|message| json!({"code":"mail_parse_failed","message":message}))}),
-    )
+    )?)
 }
 
 pub struct Delivery {
@@ -160,6 +163,20 @@ impl Delivery {
             else {
                 break;
             };
+            let mut value: Value = serde_json::from_str(&payload)?;
+            if let Some(mail) = value.get_mut("mail") {
+                let mut item: Item = serde_json::from_value(mail.clone())?;
+                // Prefer cached MIME to repair legacy outbox text.
+                if let Ok(cached) = store.get(&item.id) {
+                    item = cached;
+                }
+                if crate::provider::mail::normalize_cached(&mut item).is_err() {
+                    item.text.clear();
+                }
+                item.raw.clear();
+                *mail = serde_json::to_value(item)?;
+            }
+            let payload = serde_json::to_string(&crate::mail_content::json(&value)?)?;
             let mut request = self
                 .client
                 .post(&subscription.url)
