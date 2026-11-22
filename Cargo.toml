@@ -38,6 +38,7 @@ base64 = "0.22"
 unicode-width = "0.2"
 smb = "0.12.1"
 scraper = "0.24"
+idna = "1"
 
 # macOS uses /usr/bin/security instead (src/keychain.rs).
 [target.'cfg(not(target_os = "macos"))'.dependencies]

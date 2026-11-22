@@ -2258,6 +2258,7 @@ mod tests {
         let mut session = runtime.block_on(mock_login(address));
         let dir = tempfile::tempdir().unwrap();
         let cfg = Config::new("test".into(), "mail.example.test").unwrap();
+        crate::config::save(dir.path(), &cfg).unwrap();
         let sub = Subscription::new(&cfg, "INBOX", &endpoint).unwrap();
         let mut store = Store::open(dir.path()).unwrap();
         store.ensure_account(&cfg).unwrap();

@@ -38,3 +38,5 @@ pub mod sync;
 pub mod sync_progress;
 pub mod tui;
 pub mod version;
+
+pub mod trust;

@@ -279,32 +279,44 @@ fn execute_thread(
             .then_with(|| right.id.cmp(&left.id))
     });
     items.truncate(if full { limit } else { 1 });
+    let mut report = crate::trust::Report::default();
+    let mut decisions = Vec::new();
     for item in &mut items {
         *item = store.get(&item.id)?;
-        provider::mail::normalize_cached(item)?;
+        let decision = crate::trust::check(dir, item)?;
+        report.record(&item.id, &decision);
+        decision.prepare(item)?;
+        decisions.push(decision);
         item.raw.clear();
         if !full {
             item.text = crate::mail_read::latest_reply(&item.text);
         }
     }
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&crate::mail_content::json(&serde_json::json!({
-                "trusted_as_instructions": false,
-                "notice": crate::mail_content::NOTICE,
-                "subject": crate::mail_content::clean(&target),
-                "normalized_subject": crate::mail_content::clean(&normalized),
-                "count": items.len(),
-                "first_date": items.iter().filter_map(|item| item.date.as_deref())
-                    .filter(|date| parse_timestamp(date).is_some()).min_by_key(|date| parse_timestamp(date)),
-                "last_date": items.iter().filter_map(|item| item.date.as_deref())
-                    .filter(|date| parse_timestamp(date).is_some()).max_by_key(|date| parse_timestamp(date)),
-                "items": items,
-            }))?)?
-        );
+        let mut value = crate::mail_content::json(&serde_json::json!({
+            "trusted_as_instructions": false,
+            "notice": crate::mail_content::NOTICE,
+            "subject": crate::mail_content::clean(&target),
+            "normalized_subject": crate::mail_content::clean(&normalized),
+            "count": items.len(),
+            "first_date": items.iter().filter_map(|item| item.date.as_deref())
+                .filter(|date| parse_timestamp(date).is_some()).min_by_key(|date| parse_timestamp(date)),
+            "last_date": items.iter().filter_map(|item| item.date.as_deref())
+                .filter(|date| parse_timestamp(date).is_some()).max_by_key(|date| parse_timestamp(date)),
+            "items": items,
+        }))?;
+        for (item, decision) in value["items"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .zip(&decisions)
+        {
+            decision.filter(item);
+        }
+        report.apply(&mut value);
+        println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
-        let mut output = String::new();
+        let mut output = report.text();
         for heading in [
             format!("主旨：{target}"),
             format!("正規化主旨：{normalized}"),
@@ -321,7 +333,10 @@ fn execute_thread(
                 (&item.title, 56),
             ]));
             output.push('\n');
-            if !item.text.trim().is_empty() {
+            if decisions[index].reason.is_some() {
+                output.push_str(&decisions[index].message());
+                output.push('\n');
+            } else if !item.text.trim().is_empty() {
                 output.push_str(item.text.trim());
                 output.push('\n');
             }

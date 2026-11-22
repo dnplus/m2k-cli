@@ -164,18 +164,23 @@ impl Delivery {
                 break;
             };
             let mut value: Value = serde_json::from_str(&payload)?;
+            let mut report = crate::trust::Report::default();
             if let Some(mail) = value.get_mut("mail") {
                 let mut item: Item = serde_json::from_value(mail.clone())?;
                 // Prefer cached MIME to repair legacy outbox text.
                 if let Ok(cached) = store.get(&item.id) {
                     item = cached;
                 }
+                let decision = crate::trust::check(store.data_dir(), &item)?;
+                report.record(&item.id, &decision);
                 if crate::provider::mail::normalize_cached(&mut item).is_err() {
                     item.text.clear();
                 }
                 item.raw.clear();
                 *mail = serde_json::to_value(item)?;
+                decision.filter(mail);
             }
+            report.apply(&mut value);
             let payload = serde_json::to_string(&crate::mail_content::json(&value)?)?;
             let mut request = self
                 .client

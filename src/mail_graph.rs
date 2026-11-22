@@ -75,7 +75,10 @@ pub struct Thread {
     pub last_from: String,
     /// 由新到舊的本機郵件 ID，可交給 `mail show`。
     pub ids: Vec<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub latest_excerpt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body_withheld: Option<&'static str>,
 }
 
 struct Message {
@@ -111,14 +114,31 @@ pub fn execute(dir: &Path, args: GraphArgs, json: bool) -> Result<()> {
     store.ensure_account(&config)?;
     let now = Utc::now();
     let items = store.mail_since(now - Duration::days(i64::from(args.days)))?;
-    let graph = build(items, &config.email, &config.automated_senders, now, &args);
+    let decisions = items
+        .iter()
+        .map(|item| Ok((item.id.clone(), crate::trust::check(dir, item)?)))
+        .collect::<Result<HashMap<_, _>>>()?;
+    let mut graph = build(items, &config.email, &config.automated_senders, now, &args);
+    let mut report = crate::trust::Report::default();
+    for thread in &mut graph.threads {
+        for id in &thread.ids {
+            if let Some(decision) = decisions.get(id) {
+                report.record(id, decision);
+            }
+        }
+        if let Some(decision) = thread.ids.first().and_then(|id| decisions.get(id)) {
+            if decision.reason.is_some() {
+                thread.latest_excerpt.clear();
+                thread.body_withheld = decision.reason;
+            }
+        }
+    }
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&crate::mail_content::json(&graph)?)?
-        );
+        let mut value = crate::mail_content::json(&graph)?;
+        report.apply(&mut value);
+        println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
-        print!("{}", render_markdown(&graph));
+        print!("{}", render_markdown_report(&graph, &report.text()));
     }
     Ok(())
 }
@@ -465,6 +485,7 @@ fn thread(
             .iter()
             .map(|&index| messages[index].id.clone())
             .collect(),
+        body_withheld: None,
         latest_excerpt: excerpt(&mail_read::latest_reply(&latest.text), excerpt_chars),
     }
 }
@@ -593,6 +614,10 @@ fn cell(value: &str) -> String {
 
 /// 給代理程式讀的 Markdown；時間以台北時區顯示。
 pub fn render_markdown(graph: &MailGraph) -> String {
+    render_markdown_report(graph, "")
+}
+
+fn render_markdown_report(graph: &MailGraph, report: &str) -> String {
     let mut out = format!(
         "# 郵件關係圖\n\n- 帳號：{}\n- 範圍：{} ～ {}（近 {} 天，台北時間）\n- 郵件：{} 封，聯絡人 {} 位，信件串 {} 個\n",
         graph.me,
@@ -603,6 +628,7 @@ pub fn render_markdown(graph: &MailGraph) -> String {
         graph.people.len(),
         graph.threads.len(),
     );
+    out.push_str(report);
     if let Some(person) = &graph.person {
         out.push_str(&format!("- 篩選：{person}\n"));
     }
@@ -654,6 +680,9 @@ pub fn render_markdown(graph: &MailGraph) -> String {
             thread.participants.join(", "),
             thread.ids.join(" "),
         ));
+        if let Some(reason) = thread.body_withheld {
+            out.push_str(&format!("- 正文已隱藏：{reason}\n"));
+        }
         if !thread.latest_excerpt.is_empty() {
             out.push_str(&format!("- 最新回覆：{}\n", thread.latest_excerpt));
         }
