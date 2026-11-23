@@ -685,7 +685,7 @@ fn webhook_rechecks_trust_on_retry_after_revocation() {
     m2k::trust::execute(
         dir.path(),
         m2k::trust::Command::Add {
-            domain: "vendor.test".into(),
+            domains: vec!["vendor.test".into()],
         },
     )
     .unwrap();

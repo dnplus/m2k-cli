@@ -1,5 +1,9 @@
 //! Output-time domain trust. Cached MIME and attachment access remain unchanged.
-use crate::{config, model::Item, provider::mail};
+use crate::{
+    config,
+    model::{Item, Kind},
+    provider::mail,
+};
 use anyhow::{bail, Context, Result};
 use mailparse::{MailAddr, MailHeaderMap};
 use serde::{Deserialize, Serialize};
@@ -11,9 +15,25 @@ use std::{
 
 #[derive(clap::Subcommand)]
 pub enum Command {
+    /// 列出已信任網域及來源
     List,
-    Add { domain: String },
+    /// 手動信任一個或多個網域
+    Add {
+        #[arg(required = true)]
+        domains: Vec<String>,
+    },
+    /// 撤銷信任並阻止自動重新加入
     Remove { domain: String },
+    /// 根據已驗證的公司寄件紀錄自動信任外部收件網域
+    Auto {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// 列出重複出現的未信任外部寄件網域
+    Candidates {
+        #[arg(long, default_value_t = 3)]
+        min_count: usize,
+    },
 }
 
 pub fn domain(value: &str) -> Result<String> {
@@ -46,6 +66,18 @@ fn within(child: &str, parent: &str) -> bool {
 #[serde(deny_unknown_fields)]
 struct File {
     accounts: BTreeMap<String, BTreeSet<String>>,
+    #[serde(default)]
+    records: BTreeMap<String, BTreeMap<String, Record>>,
+    #[serde(default)]
+    revoked: BTreeMap<String, BTreeMap<String, String>>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Record {
+    source: String,
+    added_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_id: Option<String>,
 }
 fn read(dir: &Path) -> Result<File> {
     let path = dir.join("trust/domains.json");
@@ -63,6 +95,136 @@ fn read(dir: &Path) -> Result<File> {
         Err(e) => Err(e).context("無法讀取信任檔：拒絕讀取正文"),
     }
 }
+fn blocked(file: &File, key: &str, value: &str) -> bool {
+    file.revoked
+        .get(key)
+        .is_some_and(|domains| domains.keys().any(|d| within(value, d)))
+}
+fn trusted(file: &File, key: &str, value: &str) -> bool {
+    file.accounts.get(key).is_some_and(|domains| {
+        domains
+            .iter()
+            .any(|d| domain(d).is_ok_and(|d| within(value, &d)))
+    })
+}
+fn items(dir: &Path, cfg: &config::Config) -> Result<Vec<Item>> {
+    let store = crate::store::Store::open_reader(dir)?;
+    store.verify_account(cfg)?;
+    store.list(Kind::Mail, None, None, usize::MAX)
+}
+fn from_address(item: &Item) -> Result<mailparse::SingleInfo> {
+    let bytes = mail::raw_bytes(item)?;
+    let (headers, _) = mailparse::parse_headers(&bytes)?;
+    let values = headers.get_all_values("From");
+    if values.len() != 1 {
+        bail!("From 必須只有一個");
+    }
+    let addresses = mailparse::addrparse(&values[0])?;
+    let [MailAddr::Single(address)] = addresses.as_slice() else {
+        bail!("From 必須只有一個地址");
+    };
+    Ok(address.clone())
+}
+fn recipients(item: &Item) -> Result<BTreeSet<String>> {
+    let bytes = mail::raw_bytes(item)?;
+    let (headers, _) = mailparse::parse_headers(&bytes)?;
+    let mut result = BTreeSet::new();
+    for value in headers
+        .get_all_values("To")
+        .into_iter()
+        .chain(headers.get_all_values("Cc"))
+    {
+        for address in mailparse::addrparse(&value)?.iter() {
+            match address {
+                MailAddr::Single(a) => {
+                    if let Ok(d) = address_domain(&a.addr) {
+                        result.insert(d);
+                    }
+                }
+                MailAddr::Group(g) => {
+                    for a in &g.addrs {
+                        if let Ok(d) = address_domain(&a.addr) {
+                            result.insert(d);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+fn auto_apply(
+    file: &mut File,
+    key: &str,
+    cfg: &config::Config,
+    items: &[Item],
+) -> Result<Vec<Value>> {
+    let own = address_domain(&cfg.email)?;
+    let mut added = Vec::new();
+    for item in items {
+        let Ok(from) = sender(item) else { continue };
+        if !within(&from, &own) {
+            continue;
+        }
+        let Ok(address) = from_address(item) else {
+            continue;
+        };
+        let source = if address.addr.eq_ignore_ascii_case(&cfg.email) {
+            "auto:sent"
+        } else {
+            "auto:internal"
+        };
+        let Ok(recipients) = recipients(item) else {
+            continue;
+        };
+        for d in recipients {
+            if within(&d, &own) || trusted(file, key, &d) || blocked(file, key, &d) {
+                continue;
+            }
+            let record = Record {
+                source: source.into(),
+                added_at: Some(chrono::Utc::now().to_rfc3339()),
+                message_id: Some(item.id.clone()),
+            };
+            file.accounts
+                .entry(key.into())
+                .or_default()
+                .insert(d.clone());
+            file.records
+                .entry(key.into())
+                .or_default()
+                .insert(d.clone(), record.clone());
+            added.push(json!({"domain": d, "source": record.source, "added_at": record.added_at, "message_id": record.message_id}));
+        }
+    }
+    Ok(added)
+}
+fn candidates(
+    file: &File,
+    key: &str,
+    cfg: &config::Config,
+    items: &[Item],
+    min_count: usize,
+) -> Result<Vec<Value>> {
+    let own = address_domain(&cfg.email)?;
+    let mut counts: BTreeMap<String, (usize, Option<String>, String)> = BTreeMap::new();
+    for item in items {
+        let Ok(from) = sender(item) else { continue };
+        if within(&from, &own) || trusted(file, key, &from) || blocked(file, key, &from) {
+            continue;
+        }
+        let Ok(address) = from_address(item) else {
+            continue;
+        };
+        let entry = counts.entry(from).or_insert((0, None, String::new()));
+        entry.0 += 1;
+        if entry.2.is_empty() || item.date > entry.1 {
+            entry.1.clone_from(&item.date);
+            entry.2 = address.display_name.unwrap_or(address.addr);
+        }
+    }
+    Ok(counts.into_iter().filter(|(_, (count, _, _))| *count >= min_count).map(|(domain, (count, latest, example))| json!({"domain":domain,"count":count,"latest":latest,"example_sender":example})).collect())
+}
 pub fn execute(dir: &Path, command: Command) -> Result<Value> {
     let cfg = config::load(dir)?;
     let key = config::credential_key(&cfg)?;
@@ -76,18 +238,81 @@ pub fn execute(dir: &Path, command: Command) -> Result<Value> {
         .open(parent.join(".lock"))?;
     fs2::FileExt::lock_exclusive(&lock)?;
     let mut file = read(dir)?;
-    let domains = file.accounts.entry(key).or_default();
-    let changed = !matches!(command, Command::List);
+    let mut changed = false;
+    let mut extra = json!({});
     match command {
         Command::List => {}
-        Command::Add { domain: value } => {
-            domains.insert(domain(&value)?);
+        Command::Add { domains } => {
+            let domains = domains
+                .iter()
+                .map(|d| domain(d))
+                .collect::<Result<Vec<_>>>()?;
+            for d in domains {
+                file.accounts
+                    .entry(key.clone())
+                    .or_default()
+                    .insert(d.clone());
+                file.revoked.entry(key.clone()).or_default().remove(&d);
+                file.records.entry(key.clone()).or_default().insert(
+                    d,
+                    Record {
+                        source: "manual".into(),
+                        added_at: Some(chrono::Utc::now().to_rfc3339()),
+                        message_id: None,
+                    },
+                );
+            }
+            changed = true;
         }
         Command::Remove { domain: value } => {
-            domains.remove(&domain(&value)?);
+            let d = domain(&value)?;
+            file.accounts.entry(key.clone()).or_default().remove(&d);
+            file.records.entry(key.clone()).or_default().remove(&d);
+            file.revoked
+                .entry(key.clone())
+                .or_default()
+                .insert(d, chrono::Utc::now().to_rfc3339());
+            changed = true;
+        }
+        Command::Auto { dry_run } => {
+            let added = auto_apply(&mut file, &key, &cfg, &items(dir, &cfg)?)?;
+            changed = !dry_run && !added.is_empty();
+            extra["added"] = json!(added);
+            extra["dry_run"] = json!(dry_run);
+        }
+        Command::Candidates { min_count } => {
+            extra["candidates"] = json!(candidates(
+                &file,
+                &key,
+                &cfg,
+                &items(dir, &cfg)?,
+                min_count
+            )?);
         }
     }
-    let result = json!({"account": cfg.email, "default_domain": address_domain(&cfg.email)?, "domains": domains});
+    let domains = file.accounts.get(&key).cloned().unwrap_or_default();
+    let records: BTreeMap<_, _> = domains
+        .iter()
+        .map(|d| {
+            (
+                d.clone(),
+                file.records
+                    .get(&key)
+                    .and_then(|r| r.get(d))
+                    .cloned()
+                    .unwrap_or(Record {
+                        source: "manual".into(),
+                        added_at: None,
+                        message_id: None,
+                    }),
+            )
+        })
+        .collect();
+    let mut result = json!({"account": cfg.email, "default_domain": address_domain(&cfg.email)?, "domains": domains, "records": records, "revoked": file.revoked.get(&key).cloned().unwrap_or_default()});
+    result
+        .as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
     if changed {
         crate::local_state::write_atomic(
             &parent.join("domains.json"),
@@ -95,6 +320,11 @@ pub fn execute(dir: &Path, command: Command) -> Result<Value> {
         )?;
     }
     Ok(result)
+}
+/// Apply automatic trust to the current account's cached mail after a successful mail sync.
+pub fn auto_after_sync(dir: &Path) -> Result<()> {
+    execute(dir, Command::Auto { dry_run: false })?;
+    Ok(())
 }
 #[derive(Clone, Debug)]
 pub struct Decision {

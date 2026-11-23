@@ -320,6 +320,9 @@ fn run_with_policy(
             };
             let result = finish(&mut store, kind, response, &password, Utc::now())?;
             if result.error.is_none() {
+                if kind == Kind::Mail {
+                    crate::trust::auto_after_sync(data_dir)?;
+                }
                 if let Some(tokens) = &sync_tokens {
                     store.set_calendar_sync_tokens(tokens)?;
                 }
