@@ -321,3 +321,40 @@ fn list_keeps_metadata_for_malformed_identity_and_sorts_unique_domains() {
     assert_eq!(value["items"].as_array().unwrap().len(), 4);
     assert!(!value.to_string().contains("SECRET_BODY"));
 }
+
+#[test]
+fn duplicate_return_paths_are_recognized_and_trustable() {
+    let dir = fixture();
+    let headers = "From: sender@d.test\r\nReturn-Path: <bounce+389a18.39856c-dylan_lu=u@d.test>\r\nReturn-Path: <bounce+389a18.39856c-dylan_lu=u@d.test>";
+    let item = mail("duplicate", headers);
+    let decision = trust::check(dir.path(), &item).unwrap();
+    assert_eq!(decision.domain.as_deref(), Some("d.test"));
+    assert_eq!(decision.reason, Some("domain_untrusted"));
+    let mut store = Store::open(dir.path()).unwrap();
+    store
+        .ensure_account(&config::load(dir.path()).unwrap())
+        .unwrap();
+    store.upsert(&item).unwrap();
+    let list = cli(dir.path(), &["mail", "list", "--full"]);
+    assert_eq!(list["needs_trust_domains"], serde_json::json!(["d.test"]));
+    assert_eq!(list["identity_review_ids"], serde_json::json!([]));
+    cli(dir.path(), &["trust", "add", "d.test"]);
+    assert!(cli(dir.path(), &["mail", "show", "duplicate"])["text"]
+        .as_str()
+        .unwrap()
+        .contains("SECRET_BODY"));
+    assert!(trust::check(dir.path(), &item).unwrap().reason.is_none());
+
+    let case = headers.replace("u@d.test>\r\nReturn-Path", "u@D.TEST>\r\nReturn-Path");
+    assert!(trust::check(dir.path(), &mail("case", &case))
+        .unwrap()
+        .reason
+        .is_none());
+    let different = headers.replacen("bounce+389", "Bounce+389", 1);
+    assert_eq!(
+        trust::check(dir.path(), &mail("different", &different))
+            .unwrap()
+            .reason,
+        Some("identity_unverified")
+    );
+}

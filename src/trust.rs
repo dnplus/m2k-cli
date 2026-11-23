@@ -158,15 +158,23 @@ fn sender(item: &Item) -> Result<String> {
     };
     let from = address_domain(&address.addr)?;
     let returns = headers.get_all_values("Return-Path");
-    if returns.len() > 1 {
-        bail!("多個 Return-Path");
-    }
-    if let Some(value) = returns.first() {
+    let mut previous: Option<(String, String)> = None;
+    for value in &returns {
         let addresses = mailparse::addrparse(value)?;
         let [MailAddr::Single(address)] = addresses.as_slice() else {
             bail!("無效 Return-Path");
         };
+        let (local, _) = address.addr.rsplit_once('@').context("缺少寄件網域")?;
         let rp = address_domain(&address.addr)?;
+        if let Some((previous_local, previous_domain)) = &previous {
+            if local != previous_local || &rp != previous_domain {
+                bail!("多個 Return-Path");
+            }
+        } else {
+            previous = Some((local.to_owned(), rp));
+        }
+    }
+    if let Some((_, rp)) = previous {
         if !within(&from, &rp) && !within(&rp, &from) {
             bail!("From 與 Return-Path 不一致");
         }
