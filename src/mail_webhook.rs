@@ -293,6 +293,7 @@ pub fn run(dir: &Path, args: WatchArgs) -> Result<()> {
                 &stop,
             )?;
             let _lock = sync::lock(dir)?;
+            crate::mail_draft::sync_locked(dir, &cfg, &password, None)?;
             store.record_mail_delta(&subscription, previous_cursor, &delta, Utc::now())?;
             previous_cursor = Some(delta.cursor);
             Ok(delta)

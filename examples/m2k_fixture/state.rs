@@ -147,6 +147,7 @@ impl MailStore {
                 mailbox("Archive", Some("\\Archive"), 1),
                 mailbox("Sent", Some("\\Sent"), 2),
                 mailbox("Trash", Some("\\Trash"), 3),
+                mailbox("Drafts", Some("\\Drafts"), 4),
             ],
         };
         let seen = || BTreeSet::from(["\\Seen".to_owned()]);

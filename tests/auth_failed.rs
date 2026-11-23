@@ -125,7 +125,7 @@ fn wait_exit(child: &mut Child, limit: Duration) -> Option<std::process::ExitSta
 }
 
 #[test]
-fn rejected_password_reports_auth_failed_for_imap_smtp_and_dav() {
+fn rejected_password_reports_auth_failed_for_imap_submission_claim_and_dav() {
     let setup = setup(None);
 
     let (success, json) = run(&setup, WRONG, &["sync", "--kind", "mail"]);
@@ -168,7 +168,10 @@ fn rejected_password_reports_auth_failed_for_imap_smtp_and_dav() {
             &body,
         ],
     );
-    assert!(success, "creating a draft must not authenticate: {json}");
+    assert!(
+        success,
+        "creating a draft must survive failed IMAP authentication: {json}"
+    );
     let (success, json) = run(
         &setup,
         WRONG,
@@ -176,7 +179,9 @@ fn rejected_password_reports_auth_failed_for_imap_smtp_and_dav() {
     );
     assert!(!success);
     assert_auth_failed(&json);
-    assert!(json["error"]["message"].as_str().unwrap().contains("SMTP"));
+    // Submission now authenticates IMAP first to acquire the cross-host claim.
+    assert!(json["error"]["message"].as_str().unwrap().contains("IMAP"));
+    assert_eq!(events(&setup.info, "smtp.message"), 0);
 }
 
 #[test]

@@ -21,7 +21,12 @@ fn m2k(data_dir: &Path, info: &fixture::Info, trust_fixture: bool, args: &[&str]
     }
     let output = command.output().expect("run m2k");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let json = serde_json::from_str(stdout.trim()).unwrap_or_else(|_| {
+    let response = if args.starts_with(&["mail", "watch"]) {
+        stdout.lines().next().unwrap_or_default()
+    } else {
+        stdout.trim()
+    };
+    let json = serde_json::from_str(response).unwrap_or_else(|_| {
         panic!(
             "m2k {args:?} printed non-JSON\nstdout: {stdout}\nstderr: {}",
             String::from_utf8_lossy(&output.stderr)
@@ -618,4 +623,351 @@ fn draft_only_boundary_snapshots_rejects_legacy_and_never_retries_unknown() {
         2,
         "unknown is never retried across CLI processes"
     );
+}
+
+#[test]
+fn draft_sync_delete_and_scheduled_submission_across_independent_copies() {
+    let root = tempfile::tempdir().unwrap();
+    let info = fixture::start(fixture::Options {
+        data_dir: root.path().join("fixture"),
+        user: "fixture@example.test".into(),
+        password: PASSWORD.into(),
+        imap_port: 0,
+        smtp_port: 0,
+        http_port: 0,
+        sync_collection: false,
+    })
+    .unwrap();
+    let data = root.path().join("m2k");
+    ok(
+        &data,
+        &info,
+        &["init", "--username", &info.user, "--server", &info.server],
+    );
+    ok(
+        &data,
+        &info,
+        &[
+            "config",
+            "set",
+            "--imap-port",
+            &info.imap_port.to_string(),
+            "--smtp-port",
+            &info.smtp_port.to_string(),
+        ],
+    );
+    let create = || {
+        ok(
+            &data,
+            &info,
+            &[
+                "mail",
+                "draft",
+                "create",
+                "--to",
+                "bob@example.test",
+                "--subject",
+                "scheduled snapshot",
+                "--body-file",
+                info.mail_body.to_str().unwrap(),
+            ],
+        )["draft_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let id = create();
+    let listed = ok(&data, &info, &["mail", "draft", "list"]);
+    assert_eq!(listed[0]["draft_id"], id);
+    assert_eq!(listed[0]["remote_sync"], "synced");
+    assert_eq!(listed[0]["remote"]["folder"], "Drafts");
+    assert!(listed[0]["remote"]["uid_validity"].is_number());
+    assert_eq!(events(&info, "imap.append").len(), 1);
+    ok(&data, &info, &["mail", "draft", "sync", &id]);
+    assert_eq!(events(&info, "imap.append").len(), 1);
+    ok(
+        &data,
+        &info,
+        &["mail", "send", &id, "--at", "2099-01-01 14:00"],
+    );
+    assert_eq!(
+        ok(&data, &info, &["mail", "schedule", "list"])[0]["draft_id"],
+        id
+    );
+    assert!(ok(&data, &info, &["mail", "schedule", "run"])
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(events(&info, "smtp.message").is_empty());
+    let deleted = ok(&data, &info, &["mail", "draft", "delete", &id]);
+    assert_eq!(deleted["deleted"], true);
+    assert!(ok(&data, &info, &["mail", "draft", "list"])
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(events(&info, "imap.expunge").len(), 1);
+
+    let id = create();
+    ok(
+        &data,
+        &info,
+        &["mail", "send", &id, "--at", "2099-01-01 14:00"],
+    );
+    let manifest = data.join("outgoing-drafts").join(&id).join("manifest.json");
+    let mut saved: Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+    saved["scheduled_at"] = "2000-01-01T00:00:00+08:00".into();
+    std::fs::write(&manifest, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let copy = root.path().join("other-machine");
+    let copy_folder = copy.join("outgoing-drafts").join(&id);
+    std::fs::create_dir_all(&copy_folder).unwrap();
+    std::fs::copy(data.join("config.json"), copy.join("config.json")).unwrap();
+    std::fs::copy(&manifest, copy_folder.join("manifest.json")).unwrap();
+    assert_eq!(
+        ok(&data, &info, &["mail", "schedule", "run", "--dry-run"])[0]["sent"],
+        false
+    );
+    assert!(events(&info, "smtp.message").is_empty());
+    let results = std::thread::scope(|scope| {
+        let a = scope.spawn(|| ok(&data, &info, &["mail", "schedule", "run"]));
+        let b = scope.spawn(|| ok(&copy, &info, &["mail", "schedule", "run"]));
+        [a.join().unwrap(), b.join().unwrap()]
+    });
+    assert_eq!(
+        results
+            .iter()
+            .filter(|value| value[0]["sent"] == true)
+            .count(),
+        1
+    );
+    assert_eq!(events(&info, "smtp.message").len(), 1);
+    assert_eq!(events(&info, "imap.expunge").len(), 2);
+    ok(&data, &info, &["mail", "schedule", "run"]);
+    ok(&copy, &info, &["mail", "schedule", "run"]);
+    assert_eq!(events(&info, "smtp.message").len(), 1);
+}
+
+/// Simulates the webmail editor using only the loopback IMAP fixture.
+fn web_edit(info: &fixture::Info, remove_uid: Option<u32>, raw: Option<&[u8]>) -> Option<u32> {
+    use futures_util::TryStreamExt;
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let tcp = tokio::net::TcpStream::connect(("127.0.0.1", info.imap_port))
+                .await
+                .unwrap();
+            let native = native_tls::TlsConnector::builder()
+                .add_root_certificate(
+                    native_tls::Certificate::from_pem(&std::fs::read(&info.ca_cert).unwrap())
+                        .unwrap(),
+                )
+                .build()
+                .unwrap();
+            let tls = tokio_native_tls::TlsConnector::from(native)
+                .connect("127.0.0.1", tcp)
+                .await
+                .unwrap();
+            let mut client = async_imap::Client::new(tls);
+            client.read_response().await.unwrap();
+            let mut session = client
+                .login(&info.user, PASSWORD)
+                .await
+                .map_err(|(error, _)| error)
+                .unwrap();
+            session.select("Drafts").await.unwrap();
+            if let Some(uid) = remove_uid {
+                let mut store = session
+                    .uid_store(uid.to_string(), "+FLAGS.SILENT (\\Deleted)")
+                    .await
+                    .unwrap();
+                while store.try_next().await.unwrap().is_some() {}
+                drop(store);
+                let removed = session.uid_expunge(uid.to_string()).await.unwrap();
+                futures_util::pin_mut!(removed);
+                while removed.try_next().await.unwrap().is_some() {}
+            }
+            let uid = if let Some(raw) = raw {
+                session
+                    .append("Drafts", Some("(\\Draft)"), None, raw)
+                    .await
+                    .unwrap();
+                session.uid_search("ALL").await.unwrap().into_iter().max()
+            } else {
+                None
+            };
+            session.logout().await.unwrap();
+            uid
+        })
+}
+
+#[test]
+fn web_drafts_pull_on_sync_and_watch_follow_edits_and_deletes_without_submission() {
+    let root = tempfile::tempdir().unwrap();
+    let info = fixture::start(fixture::Options {
+        data_dir: root.path().join("fixture"),
+        user: "fixture@example.test".into(),
+        password: PASSWORD.into(),
+        imap_port: 0,
+        smtp_port: 0,
+        http_port: 0,
+        sync_collection: false,
+    })
+    .unwrap();
+    let data = root.path().join("m2k");
+    ok(
+        &data,
+        &info,
+        &["init", "--username", &info.user, "--server", &info.server],
+    );
+    ok(
+        &data,
+        &info,
+        &[
+            "config",
+            "set",
+            "--imap-port",
+            &info.imap_port.to_string(),
+            "--smtp-port",
+            &info.smtp_port.to_string(),
+        ],
+    );
+    let raw = |subject| {
+        format!("From: fixture@example.test\r\nTo: bob@example.test\r\nMessage-ID: <web-created@example.test>\r\nSubject: {subject}\r\n\r\nweb body\r\n").into_bytes()
+    };
+    let uid = web_edit(&info, None, Some(&raw("web original"))).unwrap();
+    ok(&data, &info, &["sync", "--kind", "mail"]);
+    let listed = ok(&data, &info, &["mail", "draft", "list"]);
+    let id = listed[0]["draft_id"].as_str().unwrap();
+    assert_eq!(listed[0]["source"], "remote");
+    assert_eq!(listed[0]["state"], "draft");
+    assert!(listed[0]["scheduled_at"].is_null());
+    assert!(events(&info, "smtp.connection").is_empty());
+    ok(&data, &info, &["mail", "send", id, "--at", "2099-01-01"]);
+    let uid = web_edit(&info, Some(uid), Some(&raw("web revised"))).unwrap();
+    ok(
+        &data,
+        &info,
+        &[
+            "mail",
+            "watch",
+            "--once",
+            "--webhook-url",
+            &info.webhook_url,
+        ],
+    );
+    let changed = ok(&data, &info, &["mail", "draft", "show", id]);
+    assert_eq!(changed["subject"], "web revised");
+    assert_eq!(changed["state"], "draft");
+    assert!(changed["scheduled_at"].is_null());
+    assert!(data.join("outgoing-draft-history").join(id).exists());
+    assert!(events(&info, "smtp.connection").is_empty());
+    web_edit(&info, Some(uid), None);
+    ok(&data, &info, &["mail", "draft", "sync"]);
+    assert_eq!(
+        ok(&data, &info, &["mail", "draft", "show", id])["remote_deleted"],
+        true
+    );
+    assert!(!m2k(&data, &info, true, &["mail", "send", id]).0);
+    assert!(ok(&data, &info, &["mail", "schedule", "run"])
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(events(&info, "smtp.connection").is_empty());
+    assert_eq!(
+        events(&info, "imap.append").len(),
+        2,
+        "pull must not resurrect deleted drafts"
+    );
+
+    // An imported draft remains sendable only after an explicit command; Bcc
+    // stays in the SMTP envelope and must never appear in SMTP DATA.
+    let raw = b"From: fixture@example.test\r\nTo: bob@example.test\r\nBcc: secret@example.test\r\nSubject: no message id\r\n\r\nbody\r\n";
+    web_edit(&info, None, Some(raw));
+    ok(&data, &info, &["mail", "draft", "sync"]);
+    let drafts = ok(&data, &info, &["mail", "draft", "list"]);
+    let imported = drafts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["subject"] == "no message id")
+        .unwrap();
+    let imported_id = imported["draft_id"].as_str().unwrap();
+    ok(&data, &info, &["mail", "send", imported_id]);
+    let sent = events(&info, "smtp.message");
+    assert_eq!(sent.len(), 1);
+    let bytes = std::fs::read(info.data_dir.join(sent[0]["file"].as_str().unwrap())).unwrap();
+    use mailparse::MailHeaderMap;
+    assert!(mailparse::parse_mail(&bytes)
+        .unwrap()
+        .headers
+        .get_first_value("Bcc")
+        .is_none());
+    assert_eq!(
+        ok(&data, &info, &["mail", "draft", "show", imported_id])["remote_sync"],
+        "synced"
+    );
+}
+
+#[test]
+fn local_and_pulled_ids_share_a_message_id_submission_claim() {
+    let root = tempfile::tempdir().unwrap();
+    let info = fixture::start(fixture::Options {
+        data_dir: root.path().join("fixture"),
+        user: "fixture@example.test".into(),
+        password: PASSWORD.into(),
+        imap_port: 0,
+        smtp_port: 0,
+        http_port: 0,
+        sync_collection: false,
+    })
+    .unwrap();
+    let a = root.path().join("local");
+    let b = root.path().join("pulled");
+    for dir in [&a, &b] {
+        ok(
+            dir,
+            &info,
+            &["init", "--username", &info.user, "--server", &info.server],
+        );
+        ok(
+            dir,
+            &info,
+            &[
+                "config",
+                "set",
+                "--imap-port",
+                &info.imap_port.to_string(),
+                "--smtp-port",
+                &info.smtp_port.to_string(),
+            ],
+        );
+    }
+    let created = ok(
+        &a,
+        &info,
+        &[
+            "mail",
+            "draft",
+            "create",
+            "--to",
+            "bob@example.test",
+            "--subject",
+            "same remote message",
+            "--body-file",
+            info.mail_body.to_str().unwrap(),
+        ],
+    );
+    let local_id = created["draft_id"].as_str().unwrap();
+    ok(&b, &info, &["mail", "draft", "sync"]);
+    let pulled = ok(&b, &info, &["mail", "draft", "list"]);
+    let remote_id = pulled[0]["draft_id"].as_str().unwrap();
+    assert_ne!(local_id, remote_id);
+    let results = std::thread::scope(|scope| {
+        let local = scope.spawn(|| m2k(&a, &info, true, &["mail", "send", local_id]));
+        let remote = scope.spawn(|| m2k(&b, &info, true, &["mail", "send", remote_id]));
+        [local.join().unwrap().0, remote.join().unwrap().0]
+    });
+    assert_eq!(results.into_iter().filter(|sent| *sent).count(), 1);
+    assert_eq!(events(&info, "smtp.message").len(), 1);
 }
