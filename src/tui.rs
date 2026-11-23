@@ -4936,7 +4936,7 @@ mod tests {
         crate::trust::execute(
             temp.path(),
             crate::trust::Command::Add {
-                domain: "vendor.test".into(),
+                domains: vec!["vendor.test".into()],
             },
         )
         .unwrap();

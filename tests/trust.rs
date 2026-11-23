@@ -213,7 +213,7 @@ fn corruption_fails_closed_and_subdomains_revoke_immediately() {
     trust::execute(
         dir.path(),
         trust::Command::Add {
-            domain: "vendor.test".into(),
+            domains: vec!["vendor.test".into()],
         },
     )
     .unwrap();
@@ -357,4 +357,95 @@ fn duplicate_return_paths_are_recognized_and_trustable() {
             .reason,
         Some("identity_unverified")
     );
+}
+
+#[test]
+fn auto_trust_internal_senders_revocation_and_candidates() {
+    let dir = fixture();
+    let mut store = Store::open(dir.path()).unwrap();
+    store
+        .ensure_account(&config::load(dir.path()).unwrap())
+        .unwrap();
+    for (id, headers) in [
+        ("sent", "From: me@example.test\r\nTo: a@sent.test, me@sub.example.test"),
+        ("reply", "From: me@example.test\r\nTo: a@reply.test\r\nIn-Reply-To: <old>"),
+        ("colleague", "From: Colleague <a@sub.example.test>\r\nTo: vendor@internal.test\r\nCc: me@example.test"),
+        ("spoof", "From: a@example.test\r\nReturn-Path: <a@evil.test>\r\nTo: a@spoof.test"),
+        ("external", "From: a@outside.test\r\nTo: me@example.test, a@not-auto.test"),
+        ("c1", "From: Vendor <a@candidate.test>\r\nTo: me@example.test"),
+        ("c2", "From: Vendor <a@candidate.test>\r\nTo: me@example.test"),
+        ("c3", "From: Vendor <a@candidate.test>\r\nTo: me@example.test"),
+    ] { store.upsert(&mail(id, headers)).unwrap(); }
+    let dry = cli(dir.path(), &["trust", "auto", "--dry-run"]);
+    assert_eq!(dry["added"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        cli(dir.path(), &["trust", "list"])["domains"],
+        serde_json::json!([])
+    );
+    cli(dir.path(), &["trust", "auto"]);
+    let list = cli(dir.path(), &["trust", "list"]);
+    assert_eq!(
+        list["domains"],
+        serde_json::json!(["internal.test", "reply.test", "sent.test"])
+    );
+    assert_eq!(list["records"]["sent.test"]["source"], "auto:sent");
+    assert_eq!(list["records"]["internal.test"]["source"], "auto:internal");
+    assert_eq!(list["records"]["internal.test"]["message_id"], "colleague");
+    assert!(cli(dir.path(), &["trust", "auto"])["added"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let candidates = cli(dir.path(), &["trust", "candidates"]);
+    assert_eq!(candidates["candidates"].as_array().unwrap().len(), 1);
+    assert_eq!(candidates["candidates"][0]["domain"], "candidate.test");
+    assert_eq!(candidates["candidates"][0]["count"], 3);
+    assert_eq!(candidates["candidates"][0]["example_sender"], "Vendor");
+    assert_eq!(
+        cli(dir.path(), &["trust", "candidates", "--min-count", "1"])["candidates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    cli(dir.path(), &["trust", "remove", "sent.test"]);
+    cli(dir.path(), &["trust", "remove", "candidate.test"]);
+    cli(dir.path(), &["trust", "auto"]);
+    assert!(!cli(dir.path(), &["trust", "list"])["domains"]
+        .to_string()
+        .contains("sent.test"));
+    assert!(cli(dir.path(), &["trust", "candidates"])["candidates"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    cli(dir.path(), &["trust", "add", "sent.test", "candidate.test"]);
+    let list = cli(dir.path(), &["trust", "list"]);
+    assert_eq!(list["records"]["sent.test"]["source"], "manual");
+    assert!(list["revoked"].get("sent.test").is_none());
+    assert!(list["domains"].to_string().contains("candidate.test"));
+}
+
+#[test]
+fn old_trust_file_remains_compatible() {
+    let dir = fixture();
+    let cfg = config::load(dir.path()).unwrap();
+    let key = config::credential_key(&cfg).unwrap();
+    std::fs::create_dir_all(dir.path().join("trust")).unwrap();
+    std::fs::write(
+        dir.path().join("trust/domains.json"),
+        serde_json::to_vec(&serde_json::json!({"accounts": {key: ["legacy.test"]}})).unwrap(),
+    )
+    .unwrap();
+    assert!(trust::check(dir.path(), &mail("1", "From: a@legacy.test"))
+        .unwrap()
+        .reason
+        .is_none());
+    assert_eq!(
+        cli(dir.path(), &["trust", "list"])["records"]["legacy.test"]["source"],
+        "manual"
+    );
+    cli(dir.path(), &["trust", "add", "new.test"]);
+    assert!(trust::check(dir.path(), &mail("1", "From: a@legacy.test"))
+        .unwrap()
+        .reason
+        .is_none());
 }
