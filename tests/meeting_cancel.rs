@@ -76,7 +76,18 @@ fn client(root: &Path, info: &fixture::Info, name: &str) -> std::path::PathBuf {
         &["init", "--username", &info.user, "--server", &info.server],
     );
     let smtp_port = info.smtp_port.to_string();
-    ok(&data, info, &["config", "set", "--smtp-port", &smtp_port]);
+    ok(
+        &data,
+        info,
+        &[
+            "config",
+            "set",
+            "--smtp-port",
+            &smtp_port,
+            "--imap-port",
+            &info.imap_port.to_string(),
+        ],
+    );
     ok(&data, info, &["sync", "--kind", "calendar"]);
     data
 }

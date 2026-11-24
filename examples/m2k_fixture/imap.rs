@@ -214,7 +214,10 @@ fn handle(
         "CREATE" => {
             let name = text_arg(arg(args, 1, "mailbox")?, literals);
             let mut mail = fixture.mail.lock().expect("mail lock");
-            if mail.get(&name).is_none() {
+            if mail.get(&name).is_some() {
+                bail!("mailbox already exists");
+            }
+            {
                 let validity = mail.boxes.iter().map(|b| b.uid_validity).max().unwrap_or(1) + 1;
                 mail.boxes.push(Mailbox {
                     name,
@@ -740,6 +743,17 @@ fn search(mailbox: &Mailbox, args: &[String], literals: &[Vec<u8>]) -> Result<Ve
                         "BEFORE" => day < date,
                         _ => day == date,
                     }
+                });
+            }
+            "HEADER" => {
+                use mailparse::MailHeaderMap;
+                let field = next(&mut index)?;
+                let needle = next(&mut index)?.to_lowercase();
+                hits.retain(|&i| {
+                    mailparse::parse_headers(&messages[i].raw)
+                        .ok()
+                        .and_then(|(headers, _)| headers.get_first_value(&field))
+                        .is_some_and(|value| value.to_lowercase().contains(&needle))
                 });
             }
             "TEXT" | "BODY" | "SUBJECT" | "FROM" | "TO" => {

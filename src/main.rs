@@ -649,6 +649,7 @@ fn mail_command(dir: &Path, cmd: MailCommand, json: bool) -> Result<()> {
         }
         MailCommand::Send {
             draft_id,
+            at,
             to,
             cc,
             subject,
@@ -664,6 +665,10 @@ fn mail_command(dir: &Path, cmd: MailCommand, json: bool) -> Result<()> {
                 bail!(m2k::mail_draft::MIGRATION);
             }
             let draft_id = draft_id.context(m2k::mail_draft::MIGRATION)?;
+            if let Some(at) = at {
+                emit(&m2k::mail_draft::schedule(dir, &draft_id, &at)?, json)?;
+                return Ok(());
+            }
             let message_id = m2k::mail_draft::send(dir, &draft_id)?;
             emit(
                 &serde_json::json!({"draft_id":draft_id,"message_id":message_id,"sent":true}),
@@ -673,9 +678,30 @@ fn mail_command(dir: &Path, cmd: MailCommand, json: bool) -> Result<()> {
         MailCommand::Reply { .. } | MailCommand::Forward { .. } => {
             bail!(m2k::mail_draft::MIGRATION)
         }
+        MailCommand::Schedule(command) => {
+            use cli::ScheduleCommand;
+            let output = match command {
+                ScheduleCommand::List => m2k::mail_draft::list(dir, true)?,
+                ScheduleCommand::Cancel { id } => m2k::mail_draft::cancel(dir, &id)?,
+                ScheduleCommand::Run { dry_run } => m2k::mail_draft::run(dir, dry_run)?,
+            };
+            emit(&output, json)?;
+        }
         MailCommand::Draft(command) => {
             use cli::DraftCommand;
             let id = match command {
+                DraftCommand::List => {
+                    emit(&m2k::mail_draft::list(dir, false)?, json)?;
+                    return Ok(());
+                }
+                DraftCommand::Delete { id } => {
+                    emit(&m2k::mail_draft::delete(dir, &id)?, json)?;
+                    return Ok(());
+                }
+                DraftCommand::Sync { id } => {
+                    emit(&m2k::mail_draft::sync_remote(dir, id.as_deref())?, json)?;
+                    return Ok(());
+                }
                 DraftCommand::Create(args) => mail_action::draft(dir, || {
                     Ok(OutgoingMail {
                         to: args.to,

@@ -306,8 +306,12 @@ fn run_with_policy(
             let mut sync_tokens = None;
             let mut window_checked = false;
             let response = match kind {
-                Kind::Mail => provider::mail::sync(&cfg, &password, &existing)
-                    .map(|snapshot| store::without_expired_mail(snapshot, &cfg, Utc::now())),
+                Kind::Mail => {
+                    provider::mail::sync(&cfg, &password, &existing).and_then(|snapshot| {
+                        crate::mail_draft::sync_locked(data_dir, &cfg, &password, None)?;
+                        Ok(store::without_expired_mail(snapshot, &cfg, Utc::now()))
+                    })
+                }
                 Kind::Calendar => {
                     let outcome =
                         sync_calendar(&mut store, &cfg, &password, &existing, full_calendar, now)?;

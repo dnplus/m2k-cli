@@ -1,3 +1,4 @@
+mod drafts;
 use crate::{
     config::Config,
     model::{Attachment, Collection, Item, Kind, OutgoingMail, Snapshot},
@@ -10,6 +11,7 @@ use async_imap::{
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Duration, Utc};
+pub(crate) use drafts::{claim_draft, fingerprint, read_drafts, sync_draft, RemoteSnapshot};
 use futures_util::{pin_mut, TryStreamExt};
 use ical::IcalParser;
 use lettre::{
@@ -1839,7 +1841,7 @@ mod tests {
         thread::{self, JoinHandle},
     };
 
-    fn mock_imap(steps: Vec<(String, String)>) -> (SocketAddr, JoinHandle<Vec<String>>) {
+    pub(super) fn mock_imap(steps: Vec<(String, String)>) -> (SocketAddr, JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock IMAP");
         let address = listener.local_addr().unwrap();
         let handle = thread::spawn(move || {
@@ -1886,7 +1888,7 @@ mod tests {
         (address, handle)
     }
 
-    async fn mock_login(address: SocketAddr) -> Session<TcpStream> {
+    pub(super) async fn mock_login(address: SocketAddr) -> Session<TcpStream> {
         let stream = TcpStream::connect(address).await.unwrap();
         let mut client = Client::new(stream);
         client.read_response().await.unwrap().unwrap();

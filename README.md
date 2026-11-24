@@ -524,3 +524,80 @@ list/search 仍回傳經清理的主旨、寄件人、日期等 metadata。未�
 `--full` 僅保留引用歷史，不會輸出 raw；只有明確 `mail show ID --raw` 才顯示 RFC822，文字仍有封套，`--json --raw` 則在 `raw` 欄位中。raw 顯示會清除終端／不可視控制字元並以 UTF-8 替代無效位元組，因此不是逐位元組鑑識匯出。舊快取有 raw 時會重新解碼，不沿用舊正文。無 raw 的資料無法確認原始 From，正文會隱藏並列入身分待檢查。
 
 封套提醒模型把郵件視為外部資料，並非授權或消除提示注入的保證；可見的惡意指令仍可能存在。不要依信件內容改設定、授權或發信。此版本不含 TOFU 網域授權，也不新增全域唯讀限制。
+
+### IMAP 草稿與排程寄送
+
+```sh
+m2k --json mail draft list
+m2k mail draft sync                 # 重試所有草稿的同步／刪除
+m2k mail draft sync DRAFT_ID
+m2k mail draft delete DRAFT_ID
+m2k mail send DRAFT_ID --at '明天 14:00'
+m2k mail schedule list
+m2k mail schedule cancel DRAFT_ID
+m2k mail schedule run --dry-run
+m2k mail schedule run
+```
+
+建立草稿先保存本機固定 MIME，再以 `\Draft` APPEND 到 IMAP。尋找順序是 LIST 的 SPECIAL-USE `\Drafts`、`config.json` 的 `drafts_folder`（IMAP 原始名稱）、常見名稱 `Drafts`／`草稿匣`（支援 modified UTF-7 名稱）。不自動建立草稿匣；找不到或連線失敗時本機草稿仍保存，`remote_sync` 為 `failed`，可用 `draft sync` 重試。同步為雙向：先拉回網頁版本，再上傳尚未同步的本機草稿。CLI 沒有直接改寫內容的指令；網頁修改會保存舊版本後更新本機。
+
+`draft list` 顯示 ID、收件人、主旨、建立時間、狀態、`remote_sync`、`scheduled_at` 與同步錯誤，另有 `source: local|remote`、`remote_deleted`、`import_error`。舊版 `outgoing-drafts/` 可直接讀取，未同步者預設 `pending`。每次同步會以固定 Message-ID 找回遠端草稿，保存 UID／UIDVALIDITY，避免 APPEND 回應遺失後盲目新增。刪除前會比對完整 Message-ID，已取得遠端快照者還會確認 UIDVALIDITY、UID 與原始 MIME 雜湊，遇到網頁新修改就保留並回報衝突。
+
+成功寄送後清除 IMAP 草稿；`draft delete` 會一併取消排程。`sending`／`unknown` 拒絕刪除。遠端刪除失敗時保留本機草稿與 `delete_pending`，禁止再寄送或排程，可用 `draft sync` 重試；兩邊清除成功才回報 `deleted: true`。刪除使用精準 UID STORE `\Deleted` 與 UID EXPUNGE；沒有 UIDPLUS 時只標記自己的草稿，不做全匣 EXPUNGE，回報 `failed` 並保留本機資料待重試。寄送成功但清理失敗仍是 `sent`，只能重試清理，不能重寄。
+
+`--at` 使用 Asia/Taipei 自然語言／RFC3339 時間，只有日期時預設 09:00，過去時間拒絕。它只寫入排程，不提交 SMTP。已排程草稿需先 cancel 才能立即手動寄送。`schedule run` 只處理到期項目，`--dry-run` 不變更狀態、不連線；各筆結果包含 `sent` 或 `error`。排程沒有背景常駐程序，需要外部定期呼叫 run；本版不安裝 cron、launchd 或 systemd，watch 只同步草稿，不觸發排程寄送。
+
+所有寄送仍經同一個 send-by-id 函式，使用原始 MIME、固定 Message-ID 與 `sending`／`unknown`／`sent` 防重寄狀態。單一資料目錄以檔案鎖保護；為了讓同一 ID 複製到不同機器也不能重複提交，送出前另以 IMAP 原子 CREATE 建立空資料夾 `m2k-submission-DRAFT_ID` 與 `m2k-submission-message-MESSAGE_ID_SHA256` 作為永久防重寄標記。後者讓本機建立與另一台拉回的不同草稿 ID，也不能重複寄送同一 Message-ID。伺服器必須允許建立資料夾；已存在、權限不足或回應不明都停止提交並保守標為 `unknown`。**不要刪除此標記來重試寄信**；先以 Message-ID 人工查證寄件備份。這些空資料夾會保留，可在郵件介面中看到；它們不包含郵件正文。跨機器取消／變更排程仍需要共享同一份本機資料目錄，不會同步到其他獨立副本。
+
+
+### 網頁草稿拉回與衝突規則
+
+`sync --kind mail`、一般 `watch`、`mail watch` 與手動 `mail draft sync [DRAFT_ID]` 都會讀取 IMAP 草稿匣的完整未刪除快照（不受一般郵件保留天數限制）。指定 ID 時仍先拉回全匣，再重試指定 ID 的上傳／刪除。拉回的新草稿標記 `source: remote`、狀態 `draft`、無排程；同步流程不連 SMTP。必須明確執行 `mail send ID` 或 `mail send ID --at ...` 才能寄送／安排寄送。
+
+- 以資料夾＋UIDVALIDITY＋UID 優先辨識，同一 Message-ID 的新 UID 則更新原本本機 ID，不重複匯入。網頁修改先把舊 manifest（包含完整 MIME）存進 `<data-dir>/outgoing-draft-history/ID/`，再更新目前版本。原本的排程會取消，需重新預覽與授權排程。
+- 網頁刪除（包含 `\Deleted`）會把本機標成 `remote_deleted: true`、取消排程並阻止寄送，保留快照與歷史供查閱；不會自動 APPEND 復活。遠端讀取失敗或快照不完整，不會當成刪除。UIDVALIDITY 改變且無 Message-ID 可辨識時，保留舊快照並停止寄送，以新 UID 匯入的草稿需重新檢查。
+- `sending`／`unknown`／`sent` 與待刪除草稿不會被網頁新內容覆寫或重設為可寄。衝突的遠端原始 MIME 另存歷史、回報 `remote_sync: failed`。重複 Message-ID 不猜測合併；先在網頁整理再同步。歷史檔不會自動寄送或自動清除；需要復原內容時先人工比對，再明確建立新草稿。
+- 沒有 Message-ID 的網頁草稿會取得穩定本機 ID 與固定寄送 Message-ID，仍以遠端 UID／原始 MIME 辨識及刪除。`remote_mime_base64` 保留未修改的網頁原始 MIME；寄送快照移除 Bcc 標頭，但保留 Bcc 信封收件人。缺收件人、寄件者不符目前帳號或格式不完整時標記 `import_error`，可預覽但不可寄送／排程；請在網頁修好再同步。
+- 寄送前會重新讀取遠端草稿；若內容或狀態改變，停止這次提交並要求重新預覽。同步不會從郵件正文、標頭或網頁資料匯入任何排程。不同機器上的既有排程取消仍需在各自資料目錄處理；dylanlu-local 應是唯一排程執行來源。
+
+### dylanlu-local 的 launchd 範例（不安裝）
+
+Dylan 已選定 macOS **dylanlu-local** 執行排程。以下僅供 PR／人工設定參考，程式不建立或載入 LaunchAgent。`StartInterval` 範例為 60 秒，可改成 60–300 秒（每 1–5 分鐘）；睡眠、離線或登出期間不保證準時，恢復後下一次 run 會處理到期草稿。
+
+先將所有 `YOUR_USER` 替換為實際 macOS 帳號，並核對 binary 與帳號資料目錄；launchd 不展開 `~`、`$HOME` 或 shell 變數，所以 PATH 中的 `~/.cargo/bin` 必須寫成下列絕對路徑。由該使用者的登入工作階段執行，確保 keychain 已解鎖、m2k 有讀取憑證權限且能連 Mail2000。不要把密碼寫進 plist。下例使用已存在的 `~/Library/Logs` 存 stdout／stderr，並以 `--json` 保留逐筆 `sent/error` 結果供監控。
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.dylanlu.m2k.schedule</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOUR_USER/.cargo/bin/m2k</string>
+    <string>--data-dir</string>
+    <string>/Users/YOUR_USER/Library/Application Support/m2k</string>
+    <string>--json</string>
+    <string>mail</string>
+    <string>schedule</string>
+    <string>run</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/YOUR_USER/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/YOUR_USER/Library/Logs/m2k-schedule.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOUR_USER/Library/Logs/m2k-schedule-error.log</string>
+</dict>
+</plist>
+```
+
+`RunAtLoad` 代表人工啟用時立即檢查一次到期排程；沒有排程的網頁草稿不會因此寄出。先以相同帳號、binary 與 `--data-dir` 手動執行 `mail schedule run --dry-run` 核對；安裝／載入與 log 輪替由 Dylan 管理，本次不執行。

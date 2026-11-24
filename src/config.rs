@@ -21,6 +21,9 @@ pub struct Config {
     pub email: String,
     pub imap_host: String,
     pub imap_port: u16,
+    /// Fallback when LIST has no SPECIAL-USE \Drafts mailbox.
+    #[serde(default)]
+    pub drafts_folder: Option<String>,
     pub smtp_host: String,
     pub smtp_port: u16,
     pub caldav_url: String,
@@ -82,6 +85,7 @@ impl Config {
             email,
             imap_host: host.clone(),
             imap_port: DEFAULT_IMAP_PORT,
+            drafts_folder: None,
             smtp_host: host,
             smtp_port: DEFAULT_SMTP_PORT,
             caldav_url: format!(

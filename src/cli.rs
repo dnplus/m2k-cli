@@ -270,6 +270,8 @@ pub enum MailCommand {
     #[command(about = "只寄送已保存草稿；舊語法請改用 mail draft create")]
     Send {
         draft_id: Option<String>,
+        #[arg(long, help = "排程時間（Asia/Taipei），只保存排程")]
+        at: Option<String>,
         #[arg(long, hide = true, value_delimiter = ',')]
         to: Vec<String>,
         #[arg(long, hide = true, value_delimiter = ',')]
@@ -283,6 +285,8 @@ pub enum MailCommand {
     },
     #[command(subcommand)]
     Draft(DraftCommand),
+    #[command(subcommand)]
+    Schedule(ScheduleCommand),
     Reply {
         id: String,
         #[arg(long)]
@@ -325,7 +329,26 @@ pub enum MailCommand {
 }
 
 #[derive(Subcommand)]
+pub enum ScheduleCommand {
+    List,
+    Cancel {
+        id: String,
+    },
+    Run {
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum DraftCommand {
+    List,
+    Delete {
+        id: String,
+    },
+    Sync {
+        id: Option<String>,
+    },
     Create(SendArgs),
     Show {
         id: String,
