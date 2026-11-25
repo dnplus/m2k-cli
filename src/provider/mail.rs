@@ -11,7 +11,7 @@ use async_imap::{
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Duration, Utc};
-pub(crate) use drafts::{claim_draft, fingerprint, read_drafts, sync_draft, RemoteSnapshot};
+pub(crate) use drafts::{check_legacy_draft, fingerprint, read_drafts, sync_draft, RemoteSnapshot};
 use futures_util::{pin_mut, TryStreamExt};
 use ical::IcalParser;
 use lettre::{
@@ -1404,8 +1404,19 @@ fn invite_details(ics: &str, expected_method: &str) -> Result<(String, Vec<Strin
 }
 
 pub(crate) fn build_mail(config: &Config, mail: &OutgoingMail) -> Result<Message> {
+    build_mail_bcc(config, mail, &[])
+}
+
+pub(crate) fn build_mail_bcc(
+    config: &Config,
+    mail: &OutgoingMail,
+    bcc: &[String],
+) -> Result<Message> {
     let from = mailbox(&config.email, "寄件者")?;
     let mut builder = Message::builder().from(from).subject(mail.subject.clone());
+    for address in bcc {
+        builder = builder.bcc(mailbox(address, "密件收件者")?);
+    }
     let mut recipient_count = 0usize;
     for address in &mail.to {
         builder = builder.to(mailbox(address, "收件者")?);
@@ -1842,6 +1853,13 @@ mod tests {
     };
 
     pub(super) fn mock_imap(steps: Vec<(String, String)>) -> (SocketAddr, JoinHandle<Vec<String>>) {
+        mock_imap_limit(steps, None)
+    }
+
+    pub(super) fn mock_imap_limit(
+        steps: Vec<(String, String)>,
+        mailbox_limit: Option<usize>,
+    ) -> (SocketAddr, JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock IMAP");
         let address = listener.local_addr().unwrap();
         let handle = thread::spawn(move || {
@@ -1871,6 +1889,15 @@ mod tests {
                         current_tag = tag.to_owned();
                         command
                     };
+                    if let (Some(limit), Some(mailbox)) =
+                        (mailbox_limit, command.strip_prefix("CREATE "))
+                    {
+                        if mailbox.trim_matches('"').len() > limit {
+                            stream.write_all(format!("{current_tag} NO CREATE mail box can not exceeds 40 characters\r\n").as_bytes()).unwrap();
+                            requests.push(command.to_owned());
+                            continue;
+                        }
+                    }
                     assert_eq!(command, expected);
                     requests.push(command.to_owned());
                 }

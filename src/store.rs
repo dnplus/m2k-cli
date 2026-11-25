@@ -15,10 +15,11 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 const DATABASE_FILE_NAME: &str = "database.sqlite3";
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 const CALENDAR_SYNC_TOKEN_PREFIX: &str = "sync.calendar.token.";
 pub(crate) const DATABASE_FILE: &str = DATABASE_FILE_NAME;
 mod search;
+mod submission;
 mod webhook;
 const PAGE_ORDER: &str = "COALESCE(end_date, date, '') DESC, title COLLATE NOCASE ASC, id ASC";
 
@@ -127,6 +128,7 @@ impl Store {
                 crate::contact_index::initialize(&tx)?;
             }
             webhook::initialize(&tx)?;
+            submission::initialize(&tx)?;
             search::initialize(&tx, version < 4)?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
@@ -1062,7 +1064,8 @@ fn account_matches(
 fn has_account_data(conn: &Connection) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM items LIMIT 1) OR EXISTS(SELECT 1 FROM collections LIMIT 1)
-         OR EXISTS(SELECT 1 FROM mail_webhook_subscriptions LIMIT 1)",
+         OR EXISTS(SELECT 1 FROM mail_webhook_subscriptions LIMIT 1)
+         OR EXISTS(SELECT 1 FROM mail_submissions LIMIT 1)",
         [],
         |row| row.get(0),
     )?)

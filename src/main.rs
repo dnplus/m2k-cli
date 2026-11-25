@@ -21,6 +21,15 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Debug)]
+struct ReportedDraftFailure;
+impl std::fmt::Display for ReportedDraftFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("草稿遠端操作失敗；結果已輸出，可用 draft sync 重試")
+    }
+}
+impl std::error::Error for ReportedDraftFailure {}
+
 fn main() {
     exit_quietly_on_broken_stdout();
     let cli = match Cli::try_parse() {
@@ -45,6 +54,9 @@ fn main() {
     };
     let json = cli.json;
     if let Err(error) = execute(cli) {
+        if error.is::<ReportedDraftFailure>() {
+            std::process::exit(1);
+        }
         if json {
             if let Some(receipt) =
                 error.downcast_ref::<provider::dav::RemoteWritePendingReconcile>()
@@ -670,10 +682,14 @@ fn mail_command(dir: &Path, cmd: MailCommand, json: bool) -> Result<()> {
                 return Ok(());
             }
             let message_id = m2k::mail_draft::send(dir, &draft_id)?;
+            let saved = m2k::mail_draft::show(dir, &draft_id)?;
             emit(
-                &serde_json::json!({"draft_id":draft_id,"message_id":message_id,"sent":true}),
+                &serde_json::json!({"draft_id":draft_id,"message_id":message_id,"sent":true,"remote_sync":saved.remote_sync,"remote_error":saved.remote_error}),
                 json,
             )?;
+            if saved.remote_sync == "failed" {
+                return Err(ReportedDraftFailure.into());
+            }
         }
         MailCommand::Reply { .. } | MailCommand::Forward { .. } => {
             bail!(m2k::mail_draft::MIGRATION)
@@ -686,6 +702,13 @@ fn mail_command(dir: &Path, cmd: MailCommand, json: bool) -> Result<()> {
                 ScheduleCommand::Run { dry_run } => m2k::mail_draft::run(dir, dry_run)?,
             };
             emit(&output, json)?;
+            if output.as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item["remote_sync"] == "failed" && item["sent"] == true)
+            }) {
+                return Err(ReportedDraftFailure.into());
+            }
         }
         MailCommand::Draft(command) => {
             use cli::DraftCommand;
@@ -695,23 +718,45 @@ fn mail_command(dir: &Path, cmd: MailCommand, json: bool) -> Result<()> {
                     return Ok(());
                 }
                 DraftCommand::Delete { id } => {
-                    emit(&m2k::mail_draft::delete(dir, &id)?, json)?;
+                    let output = m2k::mail_draft::delete(dir, &id)?;
+                    emit(&output, json)?;
+                    if output["deleted"] != true {
+                        return Err(ReportedDraftFailure.into());
+                    }
                     return Ok(());
                 }
                 DraftCommand::Sync { id } => {
-                    emit(&m2k::mail_draft::sync_remote(dir, id.as_deref())?, json)?;
+                    let output = m2k::mail_draft::sync_remote(dir, id.as_deref())?;
+                    emit(&output, json)?;
+                    if output.as_array().is_some_and(|items| {
+                        items.iter().any(|item| item["remote_sync"] == "failed")
+                    }) {
+                        return Err(ReportedDraftFailure.into());
+                    }
                     return Ok(());
                 }
-                DraftCommand::Create(args) => mail_action::draft(dir, || {
-                    Ok(OutgoingMail {
-                        to: args.to,
-                        cc: args.cc,
-                        subject: args.subject,
-                        body: read_body(&args.body_file)?,
-                        attachments: args.attach,
-                        in_reply_to: None,
-                    })
-                })?,
+                DraftCommand::Edit { id, input } => {
+                    let output = m2k::mail_draft::edit(dir, &id, input)?;
+                    emit(&output, json)?;
+                    if output["remote_sync"] == "failed" {
+                        return Err(ReportedDraftFailure.into());
+                    }
+                    return Ok(());
+                }
+                DraftCommand::Create(args) => mail_action::draft_bcc(
+                    dir,
+                    || {
+                        Ok(OutgoingMail {
+                            to: args.to,
+                            cc: args.cc,
+                            subject: args.subject,
+                            body: read_body(&args.body_file)?,
+                            attachments: args.attach,
+                            in_reply_to: None,
+                        })
+                    },
+                    &args.bcc,
+                )?,
                 DraftCommand::Show { id } => {
                     let draft = m2k::mail_draft::show(dir, &id)?;
                     emit(&m2k::mail_draft::preview(&draft)?, json)?;

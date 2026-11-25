@@ -175,7 +175,7 @@ CLI 的郵件／行事曆／聯絡人列表採固定欄寬單行，長欄位以 
 
 所有寄信必須先建立草稿；只有 `mail send DRAFT_ID` 會提交 SMTP。`mail draft create/reply/forward/invite/rsvp` 回傳 `draft_id`、`sent: false`，建立與 `mail draft show ID` 預覽均不連 SMTP。RSVP 的 `--dry-run` 只預覽，不建立草稿。TUI 確認也只建立草稿，狀態列提供 `mail send ID`。
 
-草稿保存在 `<data-dir>/outgoing-drafts/<UUID>/manifest.json`（Unix 目錄 0700、檔案 0600），包含固定 Message-ID、帳號與 SMTP 端點綁定、封套、完整 MIME、附件快照、SHA-256 及狀態。預覽的 `parts` 顯示解碼正文、ICS 與附件資訊，`mime_base64` 為實際寄送的完整位元組。附件原檔變動不影響草稿。此版沒有就地編輯命令：修改後重新建立新 ID；既有 TUI 文字草稿及找房 ICS 仍須明確匯入新流程。
+草稿保存在 `<data-dir>/outgoing-drafts/<UUID>/manifest.json`（Unix 目錄 0700、檔案 0600），包含固定 Message-ID、帳號與 SMTP 端點綁定、封套、完整 MIME、附件快照、SHA-256 及狀態。預覽的 `parts` 顯示解碼正文、ICS 與附件資訊，`mime_base64` 為實際寄送的完整位元組。附件原檔變動不影響草稿。可用 `mail draft edit ID` 就地編輯並保留草稿 ID；既有 TUI 文字草稿及找房 ICS 仍須明確匯入新流程。
 
 舊 `mail send --to ...`、`mail reply`、`mail forward`、`meeting invite --send`、非 dry-run `meeting rsvp`、`meeting cancel --notify-attendees` 直寄皆非零退出，並提示草稿流程。`mail send ID` 不接受任何覆蓋內容的參數。`meeting cancel --draft-notification` 保留 DAV 刪除流程，只建立取消通知草稿，回傳 `notified: false`、`message_id: null` 與 `draft_id`。
 
@@ -539,15 +539,17 @@ m2k mail schedule run --dry-run
 m2k mail schedule run
 ```
 
-建立草稿先保存本機固定 MIME，再以 `\Draft` APPEND 到 IMAP。尋找順序是 LIST 的 SPECIAL-USE `\Drafts`、`config.json` 的 `drafts_folder`（IMAP 原始名稱）、常見名稱 `Drafts`／`草稿匣`（支援 modified UTF-7 名稱）。不自動建立草稿匣；找不到或連線失敗時本機草稿仍保存，`remote_sync` 為 `failed`，可用 `draft sync` 重試。同步為雙向：先拉回網頁版本，再上傳尚未同步的本機草稿。CLI 沒有直接改寫內容的指令；網頁修改會保存舊版本後更新本機。
+建立草稿先保存本機固定 MIME，再以 `\Draft` APPEND 到 IMAP。尋找順序是 LIST 的 SPECIAL-USE `\Drafts`、`config.json` 的 `drafts_folder`（IMAP 原始名稱）、常見名稱 `Drafts`／`草稿匣`（支援 modified UTF-7 名稱）。不自動建立草稿匣；找不到或連線失敗時本機草稿仍保存，`remote_sync` 為 `failed`，可用 `draft sync` 重試。同步為雙向：先拉回網頁版本，再上傳尚未同步的本機草稿。CLI 可用 `mail draft edit ID` 改寫內容；CLI 與網頁修改都會保存舊版本後更新本機。
 
 `draft list` 顯示 ID、收件人、主旨、建立時間、狀態、`remote_sync`、`scheduled_at` 與同步錯誤，另有 `source: local|remote`、`remote_deleted`、`import_error`。舊版 `outgoing-drafts/` 可直接讀取，未同步者預設 `pending`。每次同步會以固定 Message-ID 找回遠端草稿，保存 UID／UIDVALIDITY，避免 APPEND 回應遺失後盲目新增。刪除前會比對完整 Message-ID，已取得遠端快照者還會確認 UIDVALIDITY、UID 與原始 MIME 雜湊，遇到網頁新修改就保留並回報衝突。
 
-成功寄送後清除 IMAP 草稿；`draft delete` 會一併取消排程。`sending`／`unknown` 拒絕刪除。遠端刪除失敗時保留本機草稿與 `delete_pending`，禁止再寄送或排程，可用 `draft sync` 重試；兩邊清除成功才回報 `deleted: true`。刪除使用精準 UID STORE `\Deleted` 與 UID EXPUNGE；沒有 UIDPLUS 時只標記自己的草稿，不做全匣 EXPUNGE，回報 `failed` 並保留本機資料待重試。寄送成功但清理失敗仍是 `sent`，只能重試清理，不能重寄。
+成功寄送後清除 IMAP 草稿；`draft delete` 會一併取消排程。`sending`／`unknown` 拒絕刪除。遠端刪除失敗時保留本機草稿與 `delete_pending`，禁止再寄送或排程，可用 `draft sync` 重試；兩邊清除成功才回報 `deleted: true`。有 UIDPLUS 時使用精準 UID STORE `\Deleted` 與 UID EXPUNGE；否則以 SPECIAL-USE `\Trash` 或常見名稱（Trash、垃圾桶、垃圾匣等）找垃圾桶，有 MOVE 就移過去，沒有 MOVE 則 COPY 到垃圾桶，再標記 `\Deleted`。COPY 前與 EXPUNGE 前都查 `UID SEARCH DELETED`，只有目標一封時才允許普通 EXPUNGE；有其他已刪郵件、垃圾桶不明或任何步驟失敗即報錯，不清除其他郵件。普通 EXPUNGE 無法在 IMAP 協定上與 SEARCH 原子執行，使用此 fallback 時請避免其他客戶端同時修改刪除旗標；支援 MOVE／UIDPLUS 的伺服器不需要此 fallback。刪後重新查 UID 與完整 Message-ID，無法確認消失就回報 `remote_sync=failed`，CLI 非零退出。已卡在 `\Deleted` 的自己的草稿仍可用同一 ID 再執行 delete／sync；搜尋不排除 Deleted。寄送成功但清理失敗仍是 `sent`，`mail send` JSON 保留 `sent: true` 並帶 `remote_sync=failed`／`remote_error`、非零退出；只能用 draft sync 重試清理，不能重寄。
 
 `--at` 使用 Asia/Taipei 自然語言／RFC3339 時間，只有日期時預設 09:00，過去時間拒絕。它只寫入排程，不提交 SMTP。已排程草稿需先 cancel 才能立即手動寄送。`schedule run` 只處理到期項目，`--dry-run` 不變更狀態、不連線；各筆結果包含 `sent` 或 `error`。排程沒有背景常駐程序，需要外部定期呼叫 run；本版不安裝 cron、launchd 或 systemd，watch 只同步草稿，不觸發排程寄送。
 
-所有寄送仍經同一個 send-by-id 函式，使用原始 MIME、固定 Message-ID 與 `sending`／`unknown`／`sent` 防重寄狀態。單一資料目錄以檔案鎖保護；為了讓同一 ID 複製到不同機器也不能重複提交，送出前另以 IMAP 原子 CREATE 建立空資料夾 `m2k-submission-DRAFT_ID` 與 `m2k-submission-message-MESSAGE_ID_SHA256` 作為永久防重寄標記。後者讓本機建立與另一台拉回的不同草稿 ID，也不能重複寄送同一 Message-ID。伺服器必須允許建立資料夾；已存在、權限不足或回應不明都停止提交並保守標為 `unknown`。**不要刪除此標記來重試寄信**；先以 Message-ID 人工查證寄件備份。這些空資料夾會保留，可在郵件介面中看到；它們不包含郵件正文。跨機器取消／變更排程仍需要共享同一份本機資料目錄，不會同步到其他獨立副本。
+所有寄送仍經同一個 send-by-id 函式，使用原始 MIME、固定 Message-ID 與 `sending`／`unknown`／`sent` 狀態。防重寄記號保存在既有 `<data-dir>/database.sqlite3` 的 `mail_submissions` 表（schema 5）；draft ID 為主鍵、Message-ID 另有唯一鍵，任一相同都拒寄。送出前以 SQLite IMMEDIATE 交易寫入並提交 `sending`，才檢查舊伺服器記號與提交 SMTP；SMTP 成功寫 `sent`，中途失敗或結果不明寫 `unknown`。檔案鎖保護同一資料目錄，SQLite 唯一限制另擋不同連線的競爭。`sending`／`sent`／`unknown` 一律拒寄，即使還原了舊 manifest 也不能繞過；程序中斷留下的 `sending` 不自動重試。不要刪資料庫、記號或手改 manifest 來重寄，備份／還原須一併保存草稿與資料庫（含 SQLite 正確備份所需的 WAL 狀態）。
+
+新版不在 IMAP 建立任何防重寄資料夾；只讀 LIST 舊長、短名稱，存在或無法確認時就停止提交。此本機機制不會同步到另一台的獨立資料庫，**無法保證獨立資料目錄／不同機器間只寄一次**。所有寄送機器須一起升級，並由單一指定主機／資料目錄執行寄送及排程；不要同時啟用獨立副本的寄送排程。
 
 
 ### 網頁草稿拉回與衝突規則
@@ -560,11 +562,35 @@ m2k mail schedule run
 - 沒有 Message-ID 的網頁草稿會取得穩定本機 ID 與固定寄送 Message-ID，仍以遠端 UID／原始 MIME 辨識及刪除。`remote_mime_base64` 保留未修改的網頁原始 MIME；寄送快照移除 Bcc 標頭，但保留 Bcc 信封收件人。缺收件人、寄件者不符目前帳號或格式不完整時標記 `import_error`，可預覽但不可寄送／排程；請在網頁修好再同步。
 - 寄送前會重新讀取遠端草稿；若內容或狀態改變，停止這次提交並要求重新預覽。同步不會從郵件正文、標頭或網頁資料匯入任何排程。不同機器上的既有排程取消仍需在各自資料目錄處理；dylanlu-local 應是唯一排程執行來源。
 
+### 就地編輯與失敗重試
+
+```sh
+m2k --json mail draft edit DRAFT_ID --to colleague@example.com --cc copy@example.com --bcc private@example.com --subject '更新進度' --body-file body.md
+m2k --json mail draft edit DRAFT_ID --cc --bcc    # 清空副本與密件
+m2k --json mail draft sync DRAFT_ID              # 重試先前保存的新版
+```
+
+edit 沿用 create 的 UTF-8／Markdown 原文處理（不額外轉 HTML），`--body-file -` 從 stdin 讀取。省略欄位保留原值；`--to`／`--cc`／`--bcc` 不帶值表示清空，仍須有 To 或 Cc 收件人。create 也支援 `--bcc`，密件只在封套中，不寫入寄送 MIME 標頭。省略 `--attach` 保留附件快照，不重新讀取原附件檔；指定 `--attach FILE...` 替換附件，單獨 `--attach` 清空附件。正文替換目前的純文字部分；沒有純文字部分的特殊 MIME 請明確提供 `--attach` 來重建內容。
+
+草稿 ID 不變，每次編輯產生新 Message-ID。本機先保存新版 MIME／封套／雜湊，舊 manifest 留在 `outgoing-draft-history/ID/`。遠端先 APPEND 新版 `\Draft` 並以 Message-ID 確認，才依安全刪除規則清除舊版；全部成功才更新 UID／UIDVALIDITY／遠端 Message-ID。失敗保留新內容與舊遠端識別，`edit_pending=true`、`remote_sync=failed`，JSON 仍輸出完整預覽並非零退出。sync 重試會先找新版，避免 APPEND 回應遺失後新增第二份；此期間禁止再編輯、刪除或寄送，請先完成 sync。同步拉回舊版不會覆寫待同步的新內容。
+
+`draft`、`scheduled` 可編輯；scheduled 保留原 `scheduled_at`，可另外執行 `mail schedule cancel ID` 取消。`sending`／`sent`／`unknown`、待刪除或有衝突的草稿拒絕編輯。排程到期時若編輯仍待同步，會報錯而不寄送。
+
+### v0.7.0 防重寄標記遷移
+
+舊長名稱 `m2k-submission-DRAFT_ID`、`m2k-submission-message-MESSAGE_ID_SHA256`，以及本 branch 前一版的短名稱 `m2k-`＋36 hex 字元都保留且仍會擋寄。短名稱是對 DRAFT_ID 或 `message-MESSAGE_ID_SHA256` 再取 SHA-256 的前 36 hex；新版只重建名稱供 LIST 檢查，**不 CREATE、不 DELETE、不改名、不清理任何伺服器記號**。任何一個對應記號存在便拒絕 SMTP，查詢失敗也拒絕；該次本機 claim 保守寫 unknown。沒有自動搬移或掃描回填舊記號，既有 manifest 的 sending／sent／unknown 也不會重設。SQLite 升級只新增空的記號表，之後每次新提交才寫本機記號。
+
+所有寄送機器要一起升級，停用舊版排程後，指定單一主機／資料目錄寄送；新版 SQLite 記錄不會讓其他機器的獨立副本自動取得相同鎖定。舊版也不認得 SQLite 記號，不能新舊版混用來送同一封信。
+
+對報告中的 `2f66bff4-…`：依 v0.7.0 程式流程，CREATE 超過 40 字元失敗後會保存 unknown，該次尚未進入 SMTP；本次未讀原機 manifest，不能聲稱已確認目前狀態。**本次不重寄該封、不改其狀態**。升級也不會把 unknown 改回 draft 或自動重寄。需要查證時，在原機 show 取得完整 Message-ID，再由人工核對寄件備份、所有機器的提交紀錄、SQLite 記錄與舊長／短名稱記號；不能排除已提交時維持 unknown，保留所有記號與原稿供稽核。
+
 ### dylanlu-local 的 launchd 範例（不安裝）
 
 Dylan 已選定 macOS **dylanlu-local** 執行排程。以下僅供 PR／人工設定參考，程式不建立或載入 LaunchAgent。`StartInterval` 範例為 60 秒，可改成 60–300 秒（每 1–5 分鐘）；睡眠、離線或登出期間不保證準時，恢復後下一次 run 會處理到期草稿。
 
 先將所有 `YOUR_USER` 替換為實際 macOS 帳號，並核對 binary 與帳號資料目錄；launchd 不展開 `~`、`$HOME` 或 shell 變數，所以 PATH 中的 `~/.cargo/bin` 必須寫成下列絕對路徑。由該使用者的登入工作階段執行，確保 keychain 已解鎖、m2k 有讀取憑證權限且能連 Mail2000。不要把密碼寫進 plist。下例使用已存在的 `~/Library/Logs` 存 stdout／stderr，並以 `--json` 保留逐筆 `sent/error` 結果供監控。
+
+範例檔名為 `~/Library/LaunchAgents/com.dylanlu.m2k.schedule.plist`，與下方 Label `com.dylanlu.m2k.schedule` 一致。
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>

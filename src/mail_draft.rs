@@ -1,4 +1,5 @@
 //! Versioned MIME snapshots. Only `send` can obtain a Submission capability.
+mod edit;
 mod remote;
 use crate::{
     config::{self, Config},
@@ -6,6 +7,7 @@ use crate::{
 };
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
+pub use edit::{edit, EditInput};
 use lettre::{address::Envelope, Message};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -40,6 +42,8 @@ pub struct Draft {
     pub scheduled_at: Option<String>,
     #[serde(default)]
     pub delete_pending: bool,
+    #[serde(default)]
+    pub edit_pending: bool,
     #[serde(default = "local_source")]
     pub source: String,
     #[serde(default)]
@@ -169,6 +173,7 @@ pub(crate) fn save(dir: &Path, cfg: &Config, kind: &str, message: Message) -> Re
         remote_error: None,
         scheduled_at: None,
         delete_pending: false,
+        edit_pending: false,
         source: local_source(),
         remote_fingerprint: None,
         remote_message_id: None,
@@ -235,6 +240,12 @@ pub fn send(dir: &Path, id: &str) -> Result<String> {
 
 fn send_locked(dir: &Path, id: &str, cfg: &Config, scheduled: bool) -> Result<String> {
     let (_, before, _) = load(dir, id, cfg)?;
+    let mut store = crate::store::Store::open(dir)?;
+    store.ensure_account(cfg)?;
+    store.check_submission(id, &before.message_id)?;
+    if before.edit_pending {
+        bail!("編輯同步尚未完成；請先 draft sync");
+    }
     if matches!(before.state.as_str(), "draft" | "scheduled")
         && before.remote.is_some()
         && !before.remote_deleted
@@ -266,7 +277,6 @@ fn send_locked(dir: &Path, id: &str, cfg: &Config, scheduled: bool) -> Result<St
     if dir.join(".demo").exists() {
         bail!(crate::mail_action::DEMO_OFFLINE);
     }
-    crate::store::Store::open(dir)?.ensure_account(cfg)?;
     let password = config::password(cfg)?;
     let envelope = Envelope::new(
         Some(draft.from.parse()?),
@@ -277,8 +287,8 @@ fn send_locked(dir: &Path, id: &str, cfg: &Config, scheduled: bool) -> Result<St
             .collect::<std::result::Result<Vec<_>, _>>()?,
     )?;
     let message_id = draft.message_id.clone();
-    submit_saved(&path, &mut draft, || {
-        provider::mail::claim_draft(cfg, &password, id, &message_id)?;
+    submit_saved(&mut store, &path, &mut draft, || {
+        provider::mail::check_legacy_draft(cfg, &password, id, &message_id)?;
         provider::mail::submit_draft(
             cfg,
             &password,
@@ -292,15 +302,23 @@ fn send_locked(dir: &Path, id: &str, cfg: &Config, scheduled: bool) -> Result<St
     Ok(draft.message_id)
 }
 
-fn submit_saved(path: &Path, draft: &mut Draft, submit: impl FnOnce() -> Result<()>) -> Result<()> {
+fn submit_saved(
+    store: &mut crate::store::Store,
+    path: &Path,
+    draft: &mut Draft,
+    submit: impl FnOnce() -> Result<()>,
+) -> Result<()> {
     if !matches!(draft.state.as_str(), "draft" | "scheduled") || draft.delete_pending {
         bail!("禁止重寄");
     }
+    // Commit the unique claim before any submission. A crash leaves a blocking row.
+    store.claim_submission(&draft.draft_id, &draft.message_id)?;
     draft.state = "sending".into();
-    write_state(path, &serde_json::to_vec_pretty(draft)?)?;
-    let result = submit();
+    let result = write_state(path, &serde_json::to_vec_pretty(draft)?).and_then(|_| submit());
     draft.state = if result.is_ok() { "sent" } else { "unknown" }.into();
+    let persisted = store.finish_submission(&draft.draft_id, &draft.message_id, &draft.state);
     write_state(path, &serde_json::to_vec_pretty(draft)?)?;
+    persisted?;
     result
 }
 
@@ -365,6 +383,13 @@ fn reconcile_with(
         Ok(remote) => {
             draft.remote = remote;
             draft.remote_sync = "synced".into();
+            if draft.edit_pending {
+                draft.edit_pending = false;
+                draft.remote_fingerprint = Some(provider::mail::fingerprint(
+                    &STANDARD.decode(&draft.mime_base64)?,
+                ));
+                draft.remote_message_id = Some(draft.message_id.clone());
+            }
         }
         Err(error) => {
             draft.remote_sync = "failed".into();
@@ -411,7 +436,7 @@ fn summary(draft: &Draft, bytes: &[u8]) -> Result<serde_json::Value> {
         "created_at": draft.created_at, "state": draft.state,
         "remote_sync": draft.remote_sync, "remote": draft.remote,
         "remote_error": draft.remote_error,
-        "scheduled_at": draft.scheduled_at, "delete_pending": draft.delete_pending,
+        "scheduled_at": draft.scheduled_at, "delete_pending": draft.delete_pending, "edit_pending": draft.edit_pending,
         "source": draft.source, "remote_deleted": draft.remote_deleted, "remote_conflict": draft.remote_conflict, "import_error": draft.import_error,
     }))
 }
@@ -460,7 +485,8 @@ pub(crate) fn sync_locked(
         let conflicted = draft.remote_conflict;
         if !matches!(draft.state.as_str(), "sending" | "unknown")
             && !conflicted
-            && (draft.delete_pending
+            && (draft.edit_pending
+                || draft.delete_pending
                 || draft.state == "sent"
                 || (!draft.remote_deleted && draft.source == "local" && draft.remote.is_none()))
         {
@@ -486,7 +512,7 @@ pub fn delete(dir: &Path, id: &str) -> Result<serde_json::Value> {
     let _lock = sync::lock(dir)?;
     let cfg = config::load(dir)?;
     let (path, mut draft, bytes) = load(dir, id, &cfg)?;
-    if !matches!(draft.state.as_str(), "draft" | "scheduled" | "sent") {
+    if draft.edit_pending || !matches!(draft.state.as_str(), "draft" | "scheduled" | "sent") {
         bail!("草稿狀態為 {}，拒絕刪除", draft.state);
     }
     draft.delete_pending = true;
@@ -563,7 +589,10 @@ pub fn run(dir: &Path, dry_run: bool) -> Result<serde_json::Value> {
             results.push(serde_json::json!({"draft_id": id, "due": true, "sent": false}));
         } else {
             match send_locked(dir, &id, &cfg, true) {
-                Ok(message_id) => results.push(serde_json::json!({"draft_id": id, "message_id": message_id, "sent": true})),
+                Ok(message_id) => {
+                    let (_, saved, _) = load(dir, &id, &cfg)?;
+                    results.push(serde_json::json!({"draft_id": id, "message_id": message_id, "sent": true, "remote_sync": saved.remote_sync, "remote_error": saved.remote_error}));
+                },
                 Err(error) => results.push(serde_json::json!({"draft_id": id, "sent": false, "error": format!("{error:#}")})),
             }
         }
@@ -579,6 +608,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = Config::new("me@example.test".into(), "localhost").unwrap();
         config::save(dir.path(), &cfg).unwrap();
+        fs::write(dir.path().join(".demo"), "").unwrap();
         let message = Message::builder()
             .from("me@example.test".parse().unwrap())
             .to("you@example.test".parse().unwrap())
@@ -625,8 +655,9 @@ mod tests {
         assert!(due(&draft, chrono::Utc::now()).unwrap());
         write_state(&path, &serde_json::to_vec(&draft).unwrap()).unwrap();
         assert_eq!(run(dir.path(), true).unwrap()[0]["sent"], false);
+        let mut store = crate::store::Store::open(dir.path()).unwrap();
         let mut submissions = 0;
-        submit_saved(&path, &mut draft, || {
+        submit_saved(&mut store, &path, &mut draft, || {
             submissions += 1;
             Ok(())
         })
@@ -638,19 +669,48 @@ mod tests {
             .as_array()
             .unwrap()
             .is_empty());
-        assert!(submit_saved(&path, &mut draft, || {
+        assert!(submit_saved(&mut store, &path, &mut draft, || {
             submissions += 1;
             Ok(())
         })
         .is_err());
         assert_eq!(submissions, 1);
         draft.state = "draft".into();
-        assert!(submit_saved(&path, &mut draft, || bail!("SMTP unknown")).is_err());
-        assert_eq!(show(dir.path(), &id).unwrap().state, "unknown");
-        assert!(delete(dir.path(), &id).is_err());
+        assert!(submit_saved(&mut store, &path, &mut draft, || bail!("SMTP unknown")).is_err());
+        assert_eq!(show(dir.path(), &id).unwrap().state, "sent");
         draft.state = "sending".into();
         write_state(&path, &serde_json::to_vec(&draft).unwrap()).unwrap();
         assert!(delete(dir.path(), &id).is_err());
+    }
+
+    #[test]
+    fn submission_failure_persists_unknown_in_sqlite_and_manifest() {
+        let (dir, cfg, id) = setup();
+        let (path, mut draft, _) = load(dir.path(), &id, &cfg).unwrap();
+        let mut store = crate::store::Store::open(dir.path()).unwrap();
+        assert!(submit_saved(&mut store, &path, &mut draft, || bail!(
+            "SMTP outcome unknown"
+        ))
+        .is_err());
+        assert_eq!(show(dir.path(), &id).unwrap().state, "unknown");
+        let conn = rusqlite::Connection::open(dir.path().join("database.sqlite3")).unwrap();
+        let state: String = conn
+            .query_row(
+                "SELECT state FROM mail_submissions WHERE draft_id=?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "unknown");
+        assert!(submit_saved(&mut store, &path, &mut draft, || panic!(
+            "must not retry SMTP"
+        ))
+        .is_err());
+        draft.state = "draft".into();
+        assert!(submit_saved(&mut store, &path, &mut draft, || panic!(
+            "SQLite must block stale manifest"
+        ))
+        .is_err());
     }
 
     #[test]

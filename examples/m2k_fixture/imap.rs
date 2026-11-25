@@ -212,7 +212,11 @@ fn handle(
         "STATUS" => status(fixture, conn, tag, args, literals)?,
         "SELECT" | "EXAMINE" => select(fixture, conn, session, tag, &command, args, literals)?,
         "CREATE" => {
+            fixture.record("imap.create", json!({}), None);
             let name = text_arg(arg(args, 1, "mailbox")?, literals);
+            if name.len() > 40 {
+                bail!("CREATE mail box can not exceeds 40 characters");
+            }
             let mut mail = fixture.mail.lock().expect("mail lock");
             if mail.get(&name).is_some() {
                 bail!("mailbox already exists");
