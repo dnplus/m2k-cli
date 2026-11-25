@@ -112,6 +112,7 @@ fn imported(cfg: &Config, remote: RemoteDraft, raw: &[u8], id: String) -> Result
         remote_error: None,
         scheduled_at: None,
         delete_pending: false,
+        edit_pending: false,
         source: "remote".into(),
         remote_fingerprint: Some(fingerprint(raw)),
         remote_message_id: original_id,
@@ -126,7 +127,7 @@ fn imported(cfg: &Config, remote: RemoteDraft, raw: &[u8], id: String) -> Result
     })
 }
 
-fn archive(dir: &Path, id: &str, value: &impl Serialize) -> Result<()> {
+pub(super) fn archive(dir: &Path, id: &str, value: &impl Serialize) -> Result<()> {
     let history = dir.join("outgoing-draft-history");
     if history.try_exists()? {
         regular(&history, true)?;
@@ -191,7 +192,10 @@ pub(super) fn apply(dir: &Path, cfg: &Config, snapshot: RemoteSnapshot) -> Resul
                         .unwrap_or(&draft.message_id)
                         == id
                 });
-                (same_uid || same_id).then_some(index)
+                (same_uid
+                    || same_id
+                    || (draft.edit_pending && message_id.as_deref() == Some(&draft.message_id)))
+                .then_some(index)
             })
             .collect::<Vec<_>>();
         let duplicate_id = message_id.is_some()
@@ -218,6 +222,9 @@ pub(super) fn apply(dir: &Path, cfg: &Config, snapshot: RemoteSnapshot) -> Resul
         for index in matches {
             let (path, draft) = &mut known[index];
             seen.insert(draft.draft_id.clone());
+            if draft.edit_pending {
+                continue;
+            }
             let unchanged = draft.remote_fingerprint.as_deref() == Some(fingerprint(raw).as_str())
                 || (draft.remote_fingerprint.is_none()
                     && STANDARD.decode(&draft.mime_base64)? == *raw);
@@ -265,7 +272,10 @@ pub(super) fn apply(dir: &Path, cfg: &Config, snapshot: RemoteSnapshot) -> Resul
         }
     }
     for (path, mut draft) in known {
-        if seen.contains(&draft.draft_id)
+        if draft.edit_pending
+            || draft.delete_pending
+            || draft.state == "sent"
+            || seen.contains(&draft.draft_id)
             || !draft
                 .remote
                 .as_ref()
@@ -331,6 +341,44 @@ mod tests {
             messages: vec![(uid, bytes)],
         }
     }
+    #[test]
+    fn pending_edit_pull_preserves_new_content_schedule_and_identity() {
+        let (dir, cfg) = setup();
+        apply(dir.path(), &cfg, snapshot(1, raw("old"))).unwrap();
+        let id = ids(dir.path()).unwrap().pop().unwrap();
+        let (path, mut draft, _) = load(dir.path(), &id, &cfg).unwrap();
+        let new_bytes = String::from_utf8(raw("new"))
+            .unwrap()
+            .replace("<web@example.test>", "<new@example.test>")
+            .into_bytes();
+        draft.message_id = "<new@example.test>".into();
+        draft.mime_base64 = STANDARD.encode(&new_bytes);
+        draft.sha256 = digest(&draft.from, &draft.to, &new_bytes).unwrap();
+        draft.edit_pending = true;
+        draft.remote_sync = "failed".into();
+        draft.state = "scheduled".into();
+        draft.scheduled_at = Some("2099-01-01T09:00:00+08:00".into());
+        write_state(&path, &serde_json::to_vec(&draft).unwrap()).unwrap();
+        for remote in [
+            snapshot(1, raw("old")),
+            snapshot(2, new_bytes.clone()),
+            RemoteSnapshot {
+                folder: "Drafts".into(),
+                uid_validity: 7,
+                messages: vec![],
+            },
+        ] {
+            apply(dir.path(), &cfg, remote).unwrap();
+            let (_, after, bytes) = load(dir.path(), &id, &cfg).unwrap();
+            assert_eq!(bytes, new_bytes);
+            assert!(after.edit_pending);
+            assert!(!after.remote_deleted);
+            assert_eq!(after.scheduled_at, draft.scheduled_at);
+            assert_eq!(after.remote.unwrap().uid, 1);
+            assert_eq!(ids(dir.path()).unwrap().len(), 1);
+        }
+    }
+
     #[test]
     fn import_updates_cancel_schedule_and_remote_delete_preserves_history() {
         let (dir, cfg) = setup();

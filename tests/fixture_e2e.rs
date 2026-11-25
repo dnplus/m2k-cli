@@ -585,6 +585,7 @@ fn draft_only_boundary_snapshots_rejects_legacy_and_never_retries_unknown() {
         [a.join().unwrap().0, b.join().unwrap().0]
     });
     assert_eq!(outcomes.iter().filter(|&&ok| ok).count(), 1);
+    assert!(events(&info, "imap.create").is_empty());
     let sent = events(&info, "smtp.message");
     assert_eq!(sent.len(), 1);
     let delivered = std::fs::read(info.data_dir.join(sent[0]["file"].as_str().unwrap())).unwrap();
@@ -617,6 +618,16 @@ fn draft_only_boundary_snapshots_rejects_legacy_and_never_retries_unknown() {
         ok(&data, &info, &["mail", "draft", "show", id])["state"],
         "unknown"
     );
+    let db = rusqlite::Connection::open(data.join("database.sqlite3")).unwrap();
+    let state: String = db
+        .query_row(
+            "SELECT state FROM mail_submissions WHERE draft_id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "unknown");
+    assert!(events(&info, "imap.create").is_empty());
     assert!(!m2k(&data, &info, true, &["mail", "send", id]).0);
     assert_eq!(
         events(&info, "smtp.message").len(),
@@ -626,7 +637,7 @@ fn draft_only_boundary_snapshots_rejects_legacy_and_never_retries_unknown() {
 }
 
 #[test]
-fn draft_sync_delete_and_scheduled_submission_across_independent_copies() {
+fn draft_sync_delete_and_scheduled_submission_share_local_claims() {
     let root = tempfile::tempdir().unwrap();
     let info = fixture::start(fixture::Options {
         data_dir: root.path().join("fixture"),
@@ -699,13 +710,43 @@ fn draft_sync_delete_and_scheduled_submission_across_independent_copies() {
         .unwrap()
         .is_empty());
     assert!(events(&info, "smtp.message").is_empty());
+    let before = ok(&data, &info, &["mail", "draft", "show", &id]);
+    let edited = ok(
+        &data,
+        &info,
+        &[
+            "mail",
+            "draft",
+            "edit",
+            &id,
+            "--subject",
+            "edited scheduled snapshot",
+            "--bcc",
+            "hidden@example.test",
+            "--body-file",
+            info.mail_body.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(edited["state"], "scheduled");
+    assert_eq!(edited["scheduled_at"], before["scheduled_at"]);
+    assert_eq!(edited["remote_sync"], "synced");
+    assert_eq!(edited["edit_pending"], false);
+    assert_ne!(edited["remote"]["uid"], before["remote"]["uid"]);
+    assert_ne!(edited["message_id"], before["message_id"]);
+    ok(&data, &info, &["mail", "draft", "sync", &id]);
+    assert_eq!(events(&info, "imap.append").len(), 2);
+    assert_eq!(
+        ok(&data, &info, &["mail", "draft", "show", &id])["subject"],
+        "edited scheduled snapshot"
+    );
+    assert!(events(&info, "smtp.message").is_empty());
     let deleted = ok(&data, &info, &["mail", "draft", "delete", &id]);
     assert_eq!(deleted["deleted"], true);
     assert!(ok(&data, &info, &["mail", "draft", "list"])
         .as_array()
         .unwrap()
         .is_empty());
-    assert_eq!(events(&info, "imap.expunge").len(), 1);
+    assert_eq!(events(&info, "imap.expunge").len(), 2);
 
     let id = create();
     ok(
@@ -717,19 +758,14 @@ fn draft_sync_delete_and_scheduled_submission_across_independent_copies() {
     let mut saved: Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
     saved["scheduled_at"] = "2000-01-01T00:00:00+08:00".into();
     std::fs::write(&manifest, serde_json::to_vec(&saved).unwrap()).unwrap();
-    let copy = root.path().join("other-machine");
-    let copy_folder = copy.join("outgoing-drafts").join(&id);
-    std::fs::create_dir_all(&copy_folder).unwrap();
-    std::fs::copy(data.join("config.json"), copy.join("config.json")).unwrap();
-    std::fs::copy(&manifest, copy_folder.join("manifest.json")).unwrap();
     assert_eq!(
         ok(&data, &info, &["mail", "schedule", "run", "--dry-run"])[0]["sent"],
         false
     );
     assert!(events(&info, "smtp.message").is_empty());
     let results = std::thread::scope(|scope| {
-        let a = scope.spawn(|| ok(&data, &info, &["mail", "schedule", "run"]));
-        let b = scope.spawn(|| ok(&copy, &info, &["mail", "schedule", "run"]));
+        let a = scope.spawn(|| m2k(&data, &info, true, &["mail", "schedule", "run"]).1);
+        let b = scope.spawn(|| m2k(&data, &info, true, &["mail", "schedule", "run"]).1);
         [a.join().unwrap(), b.join().unwrap()]
     });
     assert_eq!(
@@ -740,9 +776,9 @@ fn draft_sync_delete_and_scheduled_submission_across_independent_copies() {
         1
     );
     assert_eq!(events(&info, "smtp.message").len(), 1);
-    assert_eq!(events(&info, "imap.expunge").len(), 2);
+    assert_eq!(events(&info, "imap.expunge").len(), 3);
     ok(&data, &info, &["mail", "schedule", "run"]);
-    ok(&copy, &info, &["mail", "schedule", "run"]);
+    assert!(events(&info, "imap.create").is_empty());
     assert_eq!(events(&info, "smtp.message").len(), 1);
 }
 
@@ -963,11 +999,19 @@ fn local_and_pulled_ids_share_a_message_id_submission_claim() {
     let pulled = ok(&b, &info, &["mail", "draft", "list"]);
     let remote_id = pulled[0]["draft_id"].as_str().unwrap();
     assert_ne!(local_id, remote_id);
-    let results = std::thread::scope(|scope| {
-        let local = scope.spawn(|| m2k(&a, &info, true, &["mail", "send", local_id]));
-        let remote = scope.spawn(|| m2k(&b, &info, true, &["mail", "send", remote_id]));
-        [local.join().unwrap().0, remote.join().unwrap().0]
-    });
-    assert_eq!(results.into_iter().filter(|sent| *sent).count(), 1);
+    ok(&a, &info, &["mail", "send", local_id]);
+    // Bring a stale imported manifest into the same database. Its different draft
+    // ID must still be blocked by the unique Message-ID before any remote pull.
+    let target = a.join("outgoing-drafts").join(remote_id);
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::copy(
+        b.join("outgoing-drafts")
+            .join(remote_id)
+            .join("manifest.json"),
+        target.join("manifest.json"),
+    )
+    .unwrap();
+    assert!(!m2k(&a, &info, true, &["mail", "send", remote_id]).0);
     assert_eq!(events(&info, "smtp.message").len(), 1);
+    assert!(events(&info, "imap.create").is_empty());
 }

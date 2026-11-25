@@ -221,6 +221,8 @@ pub struct SendArgs {
     pub to: Vec<String>,
     #[arg(long, value_delimiter = ',')]
     pub cc: Vec<String>,
+    #[arg(long, value_delimiter = ',')]
+    pub bcc: Vec<String>,
     #[arg(long)]
     pub subject: String,
     #[arg(long, help = "UTF-8 文字檔；- 從標準輸入讀取")]
@@ -350,6 +352,11 @@ pub enum DraftCommand {
         id: Option<String>,
     },
     Create(SendArgs),
+    Edit {
+        id: String,
+        #[command(flatten)]
+        input: m2k::mail_draft::EditInput,
+    },
     Show {
         id: String,
     },

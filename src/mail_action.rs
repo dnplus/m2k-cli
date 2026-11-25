@@ -51,13 +51,21 @@ pub fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
 
 /// 建立持久化 MIME 草稿；不連 SMTP。
 pub fn draft(dir: &Path, mail: impl FnOnce() -> Result<OutgoingMail>) -> Result<String> {
+    draft_bcc(dir, mail, &[])
+}
+
+pub fn draft_bcc(
+    dir: &Path,
+    mail: impl FnOnce() -> Result<OutgoingMail>,
+    bcc: &[String],
+) -> Result<String> {
     let _lock = sync::lock(dir)?;
     let cfg = config::load(dir)?;
     crate::mail_draft::save(
         dir,
         &cfg,
         "mail",
-        provider::mail::build_mail(&cfg, &mail()?)?,
+        provider::mail::build_mail_bcc(&cfg, &mail()?, bcc)?,
     )
 }
 
